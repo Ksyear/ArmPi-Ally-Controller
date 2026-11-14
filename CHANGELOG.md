@@ -2,6 +2,13 @@
 
 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/), 버전: SemVer.
 
+## [0.4.2] - 2026-11-15
+
+### 추가
+- **실행 중인 앱의 화면 저장**: F12, 진단 탭의 '화면 저장', 또는 설정 폴더에 `capture.request` 파일(원격 요청)로 저장한다. 내용이 `burst N S`면 S초 간격으로 N장을 절반 크기로 연속 저장한다. `%LOCALAPPDATA%\ArmPi_Ally_Controller\captures\`, 최근 200장.
+- 저장하는 동안에는 로봇 주소·이름·기기 ID·패킷 내용을 화면에서 가린다(공개 문서용). 가린 상태로 그린 다음 프레임부터 저장한다.
+- `scripts/ally_capture.sh user@host [키] [폴더] [shot | burst N S]`: 원격으로 요청하고 JPEG(한 장) 또는 GIF(연속, ffmpeg)로 가져온 뒤 기기에서 지운다.
+
 ## [0.4.1] - 2026-11-15
 
 ### 바뀜

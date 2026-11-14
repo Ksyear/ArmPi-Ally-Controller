@@ -12,3 +12,5 @@ res/app_256.png
 docs/PLAN_v*.md
 docs/SECURITY_REVIEW_v*.md
 docs/AUTOGRASP_PLAN_v*.md
+# screen captures pulled from the handheld (scripts/ally_capture.sh default folder)
+captures/

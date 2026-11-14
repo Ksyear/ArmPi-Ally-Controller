@@ -134,6 +134,13 @@ void GuiApp::save() {
   if (!save_settings(settings_path(), settings_, &err)) log_.warn(err);
 }
 
+std::vector<w::Toast> GuiApp::shown_toasts() const {
+  if (!privacy_) return toasts_;
+  std::vector<w::Toast> t = toasts_;
+  for (auto& x : t) x.text = mask_addresses(x.text);
+  return t;
+}
+
 void GuiApp::notify(const std::string& text, Status kind, double secs) {
   const double now = mono_now();
   toasts_.push_back(w::Toast{utf8_truncate(text, 160), kind, now, now + secs});
@@ -284,6 +291,7 @@ void GuiApp::handle_input(double now) {
     if (ImGui::IsKeyPressed(ImGuiKey_F3, false)) tab_ = Tab::kDiag;
     if (ImGui::IsKeyPressed(ImGuiKey_F4, false)) tab_ = Tab::kSettings;
     if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) tab_ = Tab::kGrasp;
+    if (ImGui::IsKeyPressed(ImGuiKey_F12, false) && plat_.capture) plat_.capture(1, 0.0);
     if (ImGui::IsKeyPressed(ImGuiKey_F11, false) && plat_.set_fullscreen) {
       settings_.fullscreen = !settings_.fullscreen;
       plat_.set_fullscreen(settings_.fullscreen);
@@ -509,7 +517,7 @@ void GuiApp::frame(double now) {
     // Settings work without a robot (ports, input, tilt driving...); every other tab needs a connection.
     if (!core_ && tab_ == Tab::kSettings) draw_tab_panel(ImVec2(panel_x, body_y), ImVec2(panel_w, body_h));
     else draw_connect_right(ImVec2(panel_x, body_y), ImVec2(panel_w, body_h));
-    w::toast_stack(ImGui::GetWindowDrawList(), ImVec2((g + panel_x - g) * 0.5f, body_y + S(sp::s5) + S(48)), S(720), toasts_, now);
+    w::toast_stack(ImGui::GetWindowDrawList(), ImVec2((g + panel_x - g) * 0.5f, body_y + S(sp::s5) + S(48)), S(720), shown_toasts(), now);
   } else {
     draw_camera(ImVec2(g, body_y), ImVec2(cam_w, body_h));
     if (!big) draw_tab_panel(ImVec2(panel_x, body_y), ImVec2(panel_w, body_h));
@@ -543,7 +551,9 @@ void GuiApp::draw_top_bar(ImVec2 p0, ImVec2 size) {
   if (!core_) {
     left.push_back({"연결 안 됨", Status::kOff, ""});
   } else {
-    const std::string name = demo_host_.empty() ? snap.robot.substr(0, snap.robot.find(':')) : std::string("데모 로봇");
+    const std::string name = !demo_host_.empty() ? std::string("데모 로봇")
+                             : privacy_          ? std::string("로봇")
+                                                 : snap.robot.substr(0, snap.robot.find(':'));
     left.push_back({snap.connected ? name : "응답 없음", snap.connected ? Status::kOk : Status::kWarn, ""});
     left.push_back({"차체", channel_status(snap.base.server_state), state_ko(snap.base.server_state)});
     left.push_back({"팔", channel_status(snap.arm.server_state),
@@ -750,7 +760,7 @@ void GuiApp::draw_camera(ImVec2 o, ImVec2 size) {
   }
   dl->PopClipRect();
   // toasts at the top centre of the camera (bottom centre is busy with the drive vector and buttons)
-  w::toast_stack(dl, ImVec2((o.x + o1.x) * 0.5f, o.y + S(sp::s5) + S(48)), std::min(size.x - S(64), S(720)), toasts_, now);
+  w::toast_stack(dl, ImVec2((o.x + o1.x) * 0.5f, o.y + S(sp::s5) + S(48)), std::min(size.x - S(64), S(720)), shown_toasts(), now);
 }
 
 // ───────────────────────── safety column (always visible) ─────────────────────────
@@ -1247,7 +1257,7 @@ void GuiApp::draw_tab_diag(ImVec2 size) {
     for (const auto& r : comm_.last(120)) {
       ImGui::TextColored(col::v4(col::text3), "%s %s %s", r.time.c_str() + 3, r.outgoing ? "→" : "←", net::channel_name(r.channel));
       ImGui::SameLine();
-      ImGui::TextColored(col::v4(col::text2), "%s", printable(r.data, 120).c_str());
+      ImGui::TextColored(col::v4(col::text2), "%s", privacy_ ? "(화면 저장 중 숨김)" : printable(r.data, 120).c_str());
     }
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 5) ImGui::SetScrollHereY(1.0f);
     ImGui::PopFont();
@@ -1314,13 +1324,16 @@ void GuiApp::draw_tab_diag(ImVec2 size) {
     ImGui::PushFont(F().regular, fs::micro);
     for (const auto& e : log_.last(60)) {
       const ImU32 c = e.level == Level::kError ? col::danger : e.level == Level::kWarn ? col::warn : e.level == Level::kOk ? col::ok : col::text2;
-      ImGui::TextColored(col::v4(c), "%s %s", e.time.c_str() + 3, e.text.c_str());
+      ImGui::TextColored(col::v4(c), "%s %s", e.time.c_str() + 3, privacy_ ? mask_addresses(e.text).c_str() : e.text.c_str());
     }
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 5) ImGui::SetScrollHereY(1.0f);
     ImGui::PopFont();
     ImGui::EndChild();
     ImGui::PopStyleColor();
     if (w::button("logs", "기록 폴더 열기", ImVec2(S(220), S(56))) && plat_.open_folder) plat_.open_folder(settings_dir());
+    ImGui::SameLine();
+    if (w::button("cap", "화면 저장(F12)", ImVec2(S(220), S(56)), w::Variant::kDefault, icon::kCamera) && plat_.capture)
+      plat_.capture(1, 0.0);
   }
 }
 
@@ -1411,7 +1424,8 @@ void GuiApp::draw_connect_left(ImVec2 p0, ImVec2 size) {
   ImGui::PushFont(F().mono, fs::numL);
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(sp::s4), S(sp::s3)));
   ImGui::SetNextItemWidth(S(420));
-  ImGui::InputTextWithHint("##ip", "로봇 IP 주소", ip_buf_, sizeof(ip_buf_), ImGuiInputTextFlags_CharsDecimal);
+  ImGui::InputTextWithHint("##ip", "로봇 IP 주소", ip_buf_, sizeof(ip_buf_),
+                           ImGuiInputTextFlags_CharsDecimal | (privacy_ ? ImGuiInputTextFlags_Password : 0));
   ImGui::PopStyleVar();
   ImGui::PopFont();
   ImGui::SameLine(0, S(sp::s3));
@@ -1497,9 +1511,10 @@ void GuiApp::draw_connect_right(ImVec2 p0, ImVec2 size) {
     dl->AddRectFilled(cp, ImVec2(cp.x + cw, cp.y + S(112)), act ? col::surface3 : col::surface2, S(sp::radiusM));
     dl->AddRect(cp, ImVec2(cp.x + cw, cp.y + S(112)), col::border1, S(sp::radiusM), 0, S(1));
     w::text(dl, ImVec2(cp.x + S(sp::s4), cp.y + S(sp::s4)), F().regular, fs::title, col::text2, icon::kBot);
-    w::text(dl, ImVec2(cp.x + S(60), cp.y + S(sp::s4)), F().semibold, fs::body, col::text1, name.c_str());
+    w::text(dl, ImVec2(cp.x + S(60), cp.y + S(sp::s4)), F().semibold, fs::body, col::text1, privacy_ ? "ArmPi" : name.c_str());
     w::text(dl, ImVec2(cp.x + S(60), cp.y + S(60)), F().mono, fs::micro, col::text2,
-            strf("%s:%d · ID %.8s", r.address.c_str(), r.control_port, r.device_id.c_str()).c_str());
+            privacy_ ? "주소·ID 숨김(화면 저장 중)"
+                     : strf("%s:%d · ID %.8s", r.address.c_str(), r.control_port, r.device_id.c_str()).c_str());
     const std::string rtt = strf("%.0f", r.rtt_ms);
     const ImVec2 rs = w::text_size(F().mono_medium, fs::numL, rtt.c_str());
     w::text(dl, ImVec2(cp.x + cw - rs.x - S(sp::s4), cp.y + S(sp::s4)), F().mono_medium, fs::numL, col::text1, rtt.c_str());

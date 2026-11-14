@@ -38,6 +38,8 @@ int display_width(std::string_view s);
 std::string fit(std::string_view s, int width);
 // 바이트 문자열을 사람이 읽을 수 있게(제어 문자는 \xNN)
 std::string printable(std::string_view s, size_t max_len = 400);
+// Replaces anything that looks like an IPv4 address (a.b.c.d, with an optional :port) by "•••" (screen captures).
+std::string mask_addresses(std::string_view s);
 std::string hex_dump_line(std::string_view s, size_t max_bytes = 32);
 // Cut to at most max_bytes without splitting a UTF-8 character; appends "…" when cut.
 std::string utf8_truncate(std::string_view s, size_t max_bytes);

@@ -1,6 +1,6 @@
 # 구조
 
-현재 버전 0.4.1.
+현재 버전 0.4.2.
 
 ```mermaid
 flowchart LR
@@ -116,5 +116,7 @@ Windows는 첫 손가락(primary)을 마우스 메시지로 바꿔 주고, ImGui
 | `vision_calib.json` | 카메라 보정(해상도, 관측 자세, 책상 높이, 시차, 대응점, H) | 범위·유한값, 대응점 64개 이하, H는 점에서 다시 계산 |
 | `vision_colors.json` | 물체 색 사전(색 다시 찍기) | 256 KB, 32종 이하, 값 범위 |
 | `ally_*.log`, `boot.log` | 사건 기록(최근 20개), 시작 기록 | — |
+| `captures/cap_*.bmp` | 화면 저장(F12·진단 탭·`capture.request`), 최근 200장 | — |
+| `capture.request` | 원격 화면 저장 요청(비어 있으면 한 장, `burst N S`면 연속). 앱이 0.5초마다 보고 지운다 | 64바이트, N 1–100, S 0.1–2초 |
 
 쓰기는 임시 파일 → 이름 바꾸기로 한다. 데모 실행(`--demo-connect`)은 설정·보정·색 파일을 저장하지 않는다.

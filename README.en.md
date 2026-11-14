@@ -2,7 +2,7 @@
 
 **A C++17 Windows app that turns an ASUS ROG Ally X handheld into a full controller for the Hiwonder ArmPi Pro robot (mecanum base + 5-axis arm + gripper), including camera-based object picking.**
 
-Version **0.4.1** · [한국어 README](README.md) · MIT licence · Win32 + Direct3D 11 + Dear ImGui · one static exe, no runtime DLLs
+Version **0.4.2** · [한국어 README](README.md) · MIT licence · Win32 + Direct3D 11 + Dear ImGui · one static exe, no runtime DLLs
 
 ![Drive screen (Ally X, mock robot)](docs/images/drive.jpg)
 ![Grasp tab](docs/images/grasp.jpg)
@@ -53,7 +53,7 @@ test/e2e_mock.sh /path/to/ArmPro_Cpp_ROS2
 test/e2e_grasp_mock.sh /path/to/ArmPro_Cpp_ROS2
 ```
 
-Console tool: `armpi-ally-cli discover | selftest | grasp-selftest | pads | tilt | version`.
+Console tool: `armpi-ally-cli discover | selftest | grasp-selftest | pads | tilt | version`. Screen captures of the running app: F12, the diagnostics tab, or `scripts/ally_capture.sh` (remote request → JPEG or GIF; robot addresses are hidden while saving).
 
 ## Layout
 

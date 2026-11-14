@@ -198,6 +198,46 @@ std::string fit(std::string_view s, int width) {
   return out;
 }
 
+std::string mask_addresses(std::string_view s) {
+  std::string out;
+  out.reserve(s.size());
+  size_t i = 0;
+  auto digits = [&](size_t p) {
+    size_t q = p;
+    while (q < s.size() && q - p < 3 && s[q] >= '0' && s[q] <= '9') ++q;
+    return q - p;
+  };
+  while (i < s.size()) {
+    const bool start = (i == 0 || !(s[i - 1] >= '0' && s[i - 1] <= '9')) && s[i] >= '0' && s[i] <= '9';
+    if (start) {
+      size_t p = i;
+      int groups = 0;
+      while (groups < 4) {
+        const size_t d = digits(p);
+        if (d == 0) break;
+        p += d;
+        ++groups;
+        if (groups < 4) {
+          if (p < s.size() && s[p] == '.') ++p;
+          else break;
+        }
+      }
+      if (groups == 4 && !(p < s.size() && s[p] >= '0' && s[p] <= '9')) {
+        if (p < s.size() && s[p] == ':') {  // optional port
+          size_t q = p + 1;
+          while (q < s.size() && s[q] >= '0' && s[q] <= '9') ++q;
+          if (q > p + 1) p = q;
+        }
+        out += "\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2";  // •••
+        i = p;
+        continue;
+      }
+    }
+    out += s[i++];
+  }
+  return out;
+}
+
 std::string printable(std::string_view s, size_t max_len) {
   std::string out;
   for (size_t i = 0; i < s.size() && out.size() < max_len; ++i) {

@@ -2,7 +2,7 @@
 
 **휴대용 게임 PC(ASUS ROG Ally X) 하나로 Hiwonder ArmPi Pro 로봇(메카넘 차체 + 5축 팔 + 그리퍼)을 조종하고, 카메라로 찾은 물체를 팔이 스스로 집어 들게 하는 C++ Windows 앱.**
 
-현재 버전 **0.4.1** · [English summary](README.en.md) · [조작](docs/CONTROLS_KO.md) · [안전](docs/SAFETY_KO.md) · [구조](docs/ARCHITECTURE.md) · [보안](docs/SECURITY_KO.md) · [변경 기록](CHANGELOG.md)
+현재 버전 **0.4.2** · [English summary](README.en.md) · [조작](docs/CONTROLS_KO.md) · [안전](docs/SAFETY_KO.md) · [구조](docs/ARCHITECTURE.md) · [보안](docs/SECURITY_KO.md) · [변경 기록](CHANGELOG.md)
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue) ![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Windows](https://img.shields.io/badge/platform-Windows%2011%20x64-0078d4) ![Dear ImGui](https://img.shields.io/badge/UI-Dear%20ImGui%20%2B%20D3D11-orange)
 
@@ -104,6 +104,8 @@ test/e2e_grasp_mock.sh /path/to/ArmPro_Cpp_ROS2   # 가짜 로봇 + 합성 카�
 | `grasp-selftest --robot IP --camera-url URL --calib FILE` | 자동 집기 종단 시험(127.0.0.1이 아니면 `--yes-arm-moves` 필요) |
 | `pads [--rumble ms]` | 내장 게임패드 값·진동 확인 |
 | `tilt [--seconds N]` | 기울기 센서 값과 기울기 주행 값(로봇에는 아무것도 보내지 않음) |
+
+**실행 중인 앱 화면 저장**: Ally에서 F12나 진단 탭의 '화면 저장', 또는 맥에서 `scripts/ally_capture.sh user@host [키] [폴더] [shot | burst N 초]`(원격 요청 → JPEG 한 장 또는 GIF). 저장하는 동안 로봇 주소·이름은 가린다. 시험 기록과 README 사진은 이것으로 남긴다.
 
 화면 앱 점검: `armpi-ally.exe --smoke-test --screenshot shot.bmp`, 문서용 옵션 `--demo-connect HOST --demo-ports BASE --tab drive|arm|grasp|diag|settings --demo-state estop|cambig|grasp --demo-calib FILE --demo-touch`(데모 실행은 설정·보정 파일을 저장하지 않는다).
 

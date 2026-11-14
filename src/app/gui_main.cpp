@@ -130,7 +130,8 @@ void release_camera_texture() {
 }
 
 // Save the current back buffer as a 32-bit BMP (used by --screenshot for docs and the smoke test).
-bool save_backbuffer_bmp(const std::wstring& path) {
+// step 2 = half size (every other pixel), used for capture bursts.
+bool save_backbuffer_bmp(const std::wstring& path, uint32_t step = 1) {
   ID3D11Texture2D* back = nullptr;
   if (FAILED(g_swap->GetBuffer(0, IID_PPV_ARGS(&back))) || !back) return false;
   D3D11_TEXTURE2D_DESC d{};
@@ -145,7 +146,8 @@ bool save_backbuffer_bmp(const std::wstring& path) {
     g_ctx->CopyResource(staging, back);
     D3D11_MAPPED_SUBRESOURCE m{};
     if (SUCCEEDED(g_ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
-      const uint32_t w = d.Width, h = d.Height, row = w * 4;
+      step = std::max<uint32_t>(1, step);
+      const uint32_t w = d.Width / step, h = d.Height / step, row = w * 4;
       BITMAPFILEHEADER fh{};
       BITMAPINFOHEADER ih{};
       fh.bfType = 0x4D42;
@@ -162,11 +164,12 @@ bool save_backbuffer_bmp(const std::wstring& path) {
         std::fwrite(&ih, sizeof(ih), 1, f);
         std::vector<uint8_t> line(row);
         for (uint32_t y = 0; y < h; ++y) {
-          const uint8_t* src = static_cast<const uint8_t*>(m.pData) + static_cast<size_t>(y) * m.RowPitch;
+          const uint8_t* src = static_cast<const uint8_t*>(m.pData) + static_cast<size_t>(y) * step * m.RowPitch;
           for (uint32_t x = 0; x < w; ++x) {  // RGBA -> BGRA
-            line[x * 4 + 0] = src[x * 4 + 2];
-            line[x * 4 + 1] = src[x * 4 + 1];
-            line[x * 4 + 2] = src[x * 4 + 0];
+            const uint8_t* px = src + static_cast<size_t>(x) * step * 4;
+            line[x * 4 + 0] = px[2];
+            line[x * 4 + 1] = px[1];
+            line[x * 4 + 2] = px[0];
             line[x * 4 + 3] = 255;
           }
           std::fwrite(line.data(), 1, row, f);
@@ -179,6 +182,85 @@ bool save_backbuffer_bmp(const std::wstring& path) {
   }
   back->Release();
   return ok;
+}
+
+// Screen captures of the running app (tests and documentation): F12 / the diag tab button / a request file that a
+// remote session can drop into the settings folder ("capture.request": empty = one shot, "burst N S" = N half-size
+// frames every S seconds). Files go to <settings>/captures; only the newest 200 are kept.
+struct Captures {
+  bool fresh{false};  // just requested: draw one frame with addresses hidden before saving
+  int left{0};
+  double interval{0.2}, next{0}, next_poll{0};
+  uint32_t step{1};
+  int seq{0};
+  std::string stamp;
+};
+Captures g_cap;
+
+void capture_request(int count, double interval) {
+  g_cap.left = std::clamp(count, 1, 100);
+  g_cap.interval = std::clamp(interval, 0.1, 2.0);
+  g_cap.step = g_cap.left > 1 ? 2 : 1;
+  g_cap.next = 0;
+  g_cap.seq = 0;
+  g_cap.stamp = ally::wall_stamp();
+  g_cap.fresh = true;
+}
+
+void capture_poll_request(double now) {
+  if (now < g_cap.next_poll) return;
+  g_cap.next_poll = now + 0.5;
+  const std::string req = ally::settings_dir() + "/capture.request";
+  std::string text, err;
+  if (!ally::read_text_file(req, &text, &err)) return;
+  DeleteFileW(to_wide(req).c_str());
+  int n = 1;
+  double s = 0.2;
+  if (text.size() < 64) std::sscanf(text.c_str(), "burst %d %lf", &n, &s);
+  capture_request(n, s);
+}
+
+void capture_prune(const std::wstring& dir, size_t keep) {
+  std::vector<std::wstring> files;
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW((dir + L"\\cap_*.bmp").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return;
+  do files.push_back(fd.cFileName);
+  while (FindNextFileW(h, &fd));
+  FindClose(h);
+  if (files.size() <= keep) return;
+  std::sort(files.begin(), files.end());  // names start with the time stamp
+  for (size_t i = 0; i + keep < files.size(); ++i) DeleteFileW((dir + L"\\" + files[i]).c_str());
+}
+
+// Called after the frame is drawn, before Present.
+void capture_step(double now, ally::ui::GuiApp& app) {
+  ally::EventLog& log = app.log();
+  capture_poll_request(now);
+  if (g_cap.left <= 0) return;
+  if (g_cap.fresh) {  // this frame was drawn before the request: hide addresses, save from the next frame on
+    g_cap.fresh = false;
+    app.set_privacy(true);
+    return;
+  }
+  if (now < g_cap.next) return;
+  const std::wstring dir = to_wide(ally::settings_dir() + "/captures");
+  CreateDirectoryW(dir.c_str(), nullptr);
+  const std::wstring path = dir + L"\\cap_" + to_wide(g_cap.stamp) + to_wide(ally::strf("_%03d.bmp", g_cap.seq));
+  if (!save_backbuffer_bmp(path, g_cap.step)) {
+    log.warn("화면 저장 실패");
+    g_cap.left = 0;
+    app.set_privacy(false);
+    return;
+  }
+  ++g_cap.seq;
+  --g_cap.left;
+  g_cap.next = now + g_cap.interval;
+  if (g_cap.left == 0) {
+    app.set_privacy(false);
+    log.info(g_cap.seq > 1 ? ally::strf("화면 %d장 연속 저장(captures)", g_cap.seq) : std::string("화면 저장(captures)"));
+    capture_prune(dir, 200);
+  }
 }
 
 void cleanup_device() {
@@ -602,6 +684,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
   plat.ally_on_ac = on_ac;
   plat.open_folder = open_folder;
   plat.touches = take_touches;
+  plat.capture = [](int n, double s) { capture_request(n, s); };
 
   {
     ally::ui::GuiApp app(plat, settings, fonts);
@@ -654,6 +737,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
       g_ctx->ClearRenderTargetView(g_rtv, clear);
       ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
       if (g_smoke && !demo_host.empty()) demo_touch_step(frames, app);
+      capture_step(ally::mono_now(), app);
       if (g_smoke && frames + 1 >= smoke_frames && !shot.empty())
         boot_log(save_backbuffer_bmp(shot) ? "screenshot saved" : "screenshot FAILED");
       const HRESULT hr = g_swap->Present(1, 0);  // vsync (120 Hz on the Ally X)

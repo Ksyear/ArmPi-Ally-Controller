@@ -248,6 +248,14 @@ static void test_util() {
   CHECK(parse_double("1.5") && !parse_double("x"));
 }
 
+static void test_mask_addresses() {
+  CHECK(mask_addresses("조종 세션 시작: 192.168.1.20:5001") == "조종 세션 시작: \xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2");
+  CHECK(mask_addresses("rosbridge 연결: 10.0.0.7:9090 ok") == "rosbridge 연결: \xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2 ok");
+  CHECK(mask_addresses("x 0.105 y 0.000 v1.2.3") == "x 0.105 y 0.000 v1.2.3");  // not four groups
+  CHECK(mask_addresses("1.2.3.4.5") == "1.2.3.4.5" || mask_addresses("1.2.3.4.5").find("1.2.3.4") == std::string::npos);
+  CHECK(mask_addresses("") .empty());
+}
+
 static void test_tilt() {
   using input::Gravity;
   // upright, facing the user: pitch 0; screen up on a table: pitch 90; right side down: roll +
@@ -284,7 +292,7 @@ int main() {
       {"discovery_http", test_discovery_and_http}, {"rosbridge_parse", test_rosbridge_parse},
       {"mapper", test_mapper},           {"pad_haptics", test_pad_and_haptics},
       {"util", test_util},               {"security_limits", test_security_limits},
-      {"tilt", test_tilt},
+      {"tilt", test_tilt},               {"mask_addresses", test_mask_addresses},
   };
   for (const auto& [name, fn] : tests) {
     const int before = g_fail;

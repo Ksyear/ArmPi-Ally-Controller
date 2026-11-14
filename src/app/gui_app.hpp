@@ -39,6 +39,7 @@ struct Platform {
   std::function<bool()> ally_on_ac;
   std::function<void(const std::string& utf8_path)> open_folder;
   std::function<std::vector<TouchPoint>()> touches;  // extra touch contacts (not the one driving the mouse)
+  std::function<void(int count, double interval_s)> capture;  // save the screen (1 = one shot, more = half-size burst)
 };
 
 class GuiApp {
@@ -61,6 +62,8 @@ class GuiApp {
   const Settings& settings() const { return settings_; }
   // Centres of the drive stick and the e-stop in window pixels (multi-touch self check).
   ImVec2 touch_target(int i) const { return touch_targets_[i & 1]; }
+  // Screen captures: hide robot addresses, names and packet contents while frames are being saved.
+  void set_privacy(bool on) { privacy_ = on; }
   EventLog& log() { return log_; }
 
  private:
@@ -72,6 +75,7 @@ class GuiApp {
   void handle_input(double now);
   void handle_cues(double now);
   void notify(const std::string& text, Status kind, double secs = 3.0);
+  std::vector<w::Toast> shown_toasts() const;  // toasts, addresses masked while capturing
   void save();
   void trigger_estop(double now);
 
@@ -174,7 +178,8 @@ class GuiApp {
   std::optional<vision::HsvRange> color_sample_;
   uint32_t color_sample_rgb_{0};
   bool user_active_{false};
-  double quit_armed_until_{0.0};  // top-bar quit button: second tap before this time quits
+  double quit_armed_until_{0.0};
+  bool privacy_{false};  // top-bar quit button: second tap before this time quits
   // tilt driving (RT held): sensor, reference pose captured on the press, current output for the HUD
   input::TiltSensor tilt_;
   bool tilt_tried_{false}, tilt_on_{false}, tilt_armed_{false}, tilt_warned_{false}, tilt_ref_set_{false};
