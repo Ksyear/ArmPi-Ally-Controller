@@ -4,13 +4,22 @@
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue) ![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Windows](https://img.shields.io/badge/platform-Windows%2011%20x64-0078d4) ![Dear ImGui](https://img.shields.io/badge/UI-Dear%20ImGui%20%2B%20D3D11-orange)
 
-![조종 화면(Ally X, 가짜 로봇 연결)](docs/images/drive_mock.png)
+![주행 화면(Ally X, 가짜 로봇 연결)](docs/images/drive.png)
 
-| 팔 탭: 위·옆 그림을 눌러 목표 지정 |
-|---|
-| ![팔 탭](docs/images/arm_mock.png) |
+| 팔: 위·옆 그림을 눌러 목표 지정 | 연결: 숫자판·로봇 찾기·패드 안내 |
+|---|---|
+| ![팔 탭](docs/images/arm.png) | ![연결 화면](docs/images/connect.png) |
+| **비상정지 상태**: 버튼·상단·HUD만 빨강 | **영상 크게(Y)**: 안전 열은 그대로 |
+| ![비상정지](docs/images/estop.png) | ![영상 크게](docs/images/cambig.png) |
 
-> 위 화면은 Ally X에서 앱이 직접 저장한 것이다(`--screenshot`). 로봇 대신 가짜 로봇에 연결된 상태다. 실제 로봇 시연 GIF는 실기 시험 뒤 추가한다.
+> 위 화면은 Ally X에서 앱이 직접 저장한 것이다(`--screenshot`). 로봇 대신 가짜 로봇에 연결된 상태다(주소는 '데모 로봇'으로 가림). 실제 로봇 시연 GIF는 실기 시험 뒤 추가한다.
+
+### 디자인
+
+"어두운 계기판 위에 영상 하나, 빨간 버튼 하나." 로봇 원격 조종 UI(Foxglove, QGroundControl), 휴대용 게임기 UI, FPV OSD, 산업용 HMI(ISA-101) 사례를 조사해 다시 그렸다([`docs/DESIGN_PLAN_v001.md`](docs/DESIGN_PLAN_v001.md)).
+- 색은 상태와 선택에만 쓴다. 표면은 무채색 5단계이고, 상태는 색과 모양과 글자로 함께 보인다(● 정상, ○ 대기, ▲ 주의, ■ 위험). 색약이어도 구분된다.
+- 비상정지는 항상 같은 자리에 있다. 상태는 준비·정지됨·비활성 세 가지이고, **누르는 순간** 발동한다. 해제는 진행 링이 차도록 0.8초 길게 누른다.
+- 게임패드 배지(B, LB, View…)는 직접 그린다. 숫자는 고정폭(JetBrains Mono)이라 값이 바뀌어도 화면이 흔들리지 않는다. 터치 목표는 64–112 px다.
 
 ## 왜 만들었나
 
@@ -80,6 +89,7 @@ test/e2e_mock.sh /path/to/ArmPro_Cpp_ROS2         # 가짜 로봇 종단 시험 
 armpi-ally-cli.exe selftest --robot <로봇 IP>     # Windows에서 같은 종단 시험
 armpi-ally-cli.exe pads --rumble 300              # 내장 게임패드·진동 확인
 armpi-ally.exe --smoke-test --screenshot shot.bmp # 화면 앱 시작·렌더링 점검(시작 기록: %LOCALAPPDATA%\ArmPi_Ally_Controller\boot.log)
+#   --demo-connect HOST --demo-ports BASE --tab drive|arm|diag|settings --demo-state estop|cambig  (문서용 화면)
 ```
 
 | 확인한 것 | 결과 |

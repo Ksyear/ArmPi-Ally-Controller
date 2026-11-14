@@ -24,6 +24,7 @@ struct Settings {
   bool camera_on{true};
   bool allow_drive_while_arm{false};
   bool show_crosshair{true};
+  float font_scale{1.0f};  // user text size 1.0-1.3
 };
 
 std::string settings_dir();   // created if missing (UTF-8 path)

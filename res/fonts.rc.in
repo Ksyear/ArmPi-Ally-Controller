@@ -1,0 +1,7 @@
+// Embedded fonts (RT_RCDATA = 10). Licenses: third_party/fonts/*/LICENSE.txt, OFL.txt
+201 10 "@CMAKE_SOURCE_DIR@/third_party/fonts/pretendard/Pretendard-Regular.otf"
+202 10 "@CMAKE_SOURCE_DIR@/third_party/fonts/pretendard/Pretendard-SemiBold.otf"
+203 10 "@CMAKE_SOURCE_DIR@/third_party/fonts/pretendard/Pretendard-Bold.otf"
+211 10 "@CMAKE_SOURCE_DIR@/third_party/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf"
+212 10 "@CMAKE_SOURCE_DIR@/third_party/fonts/jetbrains-mono/JetBrainsMono-Medium.ttf"
+221 10 "@CMAKE_SOURCE_DIR@/third_party/fonts/lucide/lucide-subset.ttf"

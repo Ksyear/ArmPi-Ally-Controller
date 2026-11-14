@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "app/gui_app.hpp"
+#include "app/ui_theme.hpp"
 #include "common/settings.hpp"
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
@@ -308,6 +309,71 @@ std::string font_path(const wchar_t* file) {
   return to_utf8(std::wstring(dir) + L"\\Fonts\\" + file);
 }
 
+bool file_exists(const std::string& utf8);
+
+struct Blob {
+  void* data{nullptr};
+  int size{0};
+};
+
+Blob resource(int id) {
+  HRSRC r = FindResourceW(nullptr, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(10) /* RT_RCDATA */);
+  if (!r) return {};
+  HGLOBAL g = LoadResource(nullptr, r);
+  if (!g) return {};
+  return Blob{LockResource(g), static_cast<int>(SizeofResource(nullptr, r))};
+}
+
+// Resource ids (res/fonts.rc.in)
+constexpr int kResPretendardRegular = 201, kResPretendardSemiBold = 202, kResPretendardBold = 203;
+constexpr int kResMonoRegular = 211, kResMonoMedium = 212, kResLucide = 221;
+
+// Pretendard also has glyphs in the Private Use Area where the Lucide icons live; exclude them so icons win.
+const ImWchar kPrivateUseArea[] = {0xE000, 0xF8FF, 0};
+
+ImFont* add_font(ImGuiIO& io, const Blob& b, const char* name, bool merge, bool exclude_pua = false) {
+  if (!b.data) return nullptr;
+  ImFontConfig cfg;
+  cfg.FontDataOwnedByAtlas = false;  // resource memory lives as long as the process
+  cfg.MergeMode = merge;
+  if (exclude_pua) cfg.GlyphExcludeRanges = kPrivateUseArea;
+  std::snprintf(cfg.Name, sizeof(cfg.Name), "%s", name);
+  return io.Fonts->AddFontFromMemoryTTF(b.data, b.size, 22.0f, &cfg);
+}
+
+ally::ui::Fonts load_fonts(ImGuiIO& io) {
+  ally::ui::Fonts f;
+  const Blob reg = resource(kResPretendardRegular), semi = resource(kResPretendardSemiBold), bold = resource(kResPretendardBold);
+  const Blob mono = resource(kResMonoRegular), mono_med = resource(kResMonoMedium), icons = resource(kResLucide);
+  if (reg.data && semi.data && bold.data && mono.data && mono_med.data) {
+    auto text_font = [&](const Blob& b, const char* name) {
+      ImFont* font = add_font(io, b, name, false, true);
+      add_font(io, icons, "Lucide", true);  // icons usable inline in every text font
+      return font;
+    };
+    auto num_font = [&](const Blob& b, const char* name) {
+      ImFont* font = add_font(io, b, name, false);
+      add_font(io, reg, "Pretendard (Hangul fallback)", true);  // mono has no Hangul
+      return font;
+    };
+    f.regular = text_font(reg, "Pretendard Regular");
+    f.semibold = text_font(semi, "Pretendard SemiBold");
+    f.bold = text_font(bold, "Pretendard Bold");
+    f.mono = num_font(mono, "JetBrains Mono");
+    f.mono_medium = num_font(mono_med, "JetBrains Mono Medium");
+    f.embedded = f.regular && f.semibold && f.bold && f.mono && f.mono_medium;
+  }
+  if (!f.embedded) {
+    const std::string malgun = font_path(L"malgun.ttf"), malgun_bd = font_path(L"malgunbd.ttf");
+    ImFont* r = file_exists(malgun) ? io.Fonts->AddFontFromFileTTF(malgun.c_str(), 22.0f) : io.Fonts->AddFontDefault();
+    ImFont* b = file_exists(malgun_bd) ? io.Fonts->AddFontFromFileTTF(malgun_bd.c_str(), 22.0f) : r;
+    f.regular = f.mono = f.mono_medium = r;
+    f.semibold = f.bold = b ? b : r;
+  }
+  io.FontDefault = f.regular;
+  return f;
+}
+
 std::string strf_scale(float scale) { return ally::strf(", ui scale %.2f", static_cast<double>(scale)); }
 
 bool file_exists(const std::string& utf8) {
@@ -323,11 +389,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
   //   --smoke-test [--frames N]  draw N frames (default 180) and exit, never block on dialogs
   //   --screenshot FILE.bmp      save the last frame (implies --smoke-test)
   //   --demo-connect HOST --demo-ports BASE [--tab drive|arm|diag|settings]  connect for this run only
+  //   --demo-state estop|cambig  screenshot-only display states (e-stop latched on the mock robot / full camera)
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   int smoke_frames = 180, demo_base = 0;
   std::wstring shot;
-  std::string demo_host, demo_tab;
+  std::string demo_host, demo_tab, demo_state;
   for (int i = 1; argv && i < argc; ++i) {
     const std::wstring a = argv[i];
     auto next = [&]() { return i + 1 < argc ? std::wstring(argv[++i]) : std::wstring(); };
@@ -337,6 +404,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
     else if (a == L"--demo-connect") demo_host = to_utf8(next());
     else if (a == L"--demo-ports") demo_base = _wtoi(next().c_str());
     else if (a == L"--tab") demo_tab = to_utf8(next());
+    else if (a == L"--demo-state") demo_state = to_utf8(next());
   }
   if (argv) LocalFree(argv);
   {
@@ -388,37 +456,16 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
   RECT rc;
   GetClientRect(g_hwnd, &rc);
   const float scale = std::max(0.6f, static_cast<float>(rc.bottom - rc.top) / 1080.0f);
-  ImGui::StyleColorsDark();
+  ally::ui::apply_theme(ImGui::GetStyle(), scale);
   ImGuiStyle& style = ImGui::GetStyle();
-  style.FrameRounding = 10.0f;
-  style.GrabRounding = 10.0f;
-  style.WindowRounding = 0.0f;
-  style.ChildRounding = 8.0f;
-  style.FramePadding = ImVec2(12, 8);
-  style.ItemSpacing = ImVec2(10, 10);
-  style.ScrollbarSize = 22.0f;
-  style.GrabMinSize = 28.0f;
-  style.Colors[ImGuiCol_Button] = ImVec4(0.30f, 0.33f, 0.38f, 1.0f);
-  style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.38f, 0.42f, 0.48f, 1.0f);
-  style.Colors[ImGuiCol_ButtonActive] = ImVec4(1.0f, 0.55f, 0.16f, 1.0f);
-  style.Colors[ImGuiCol_SliderGrab] = ImVec4(1.0f, 0.55f, 0.16f, 1.0f);
-  style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(1.0f, 0.65f, 0.30f, 1.0f);
-  style.Colors[ImGuiCol_CheckMark] = ImVec4(1.0f, 0.55f, 0.16f, 1.0f);
-  style.Colors[ImGuiCol_Header] = ImVec4(0.25f, 0.28f, 0.33f, 1.0f);
-  style.ScaleAllSizes(scale);
   style.FontSizeBase = 22.0f;
   style.FontScaleMain = scale;
 
-  // Fonts are loaded from Windows at run time (Malgun Gothic covers Hangul); nothing is bundled.
-  ally::ui::Fonts fonts;
-  const std::string regular = font_path(L"malgun.ttf"), bold = font_path(L"malgunbd.ttf");
-  fonts.regular = file_exists(regular) ? io.Fonts->AddFontFromFileTTF(regular.c_str(), 22.0f) : io.Fonts->AddFontDefault();
-  fonts.bold = file_exists(bold) ? io.Fonts->AddFontFromFileTTF(bold.c_str(), 22.0f) : fonts.regular;
-  if (!fonts.regular) fonts.regular = io.Fonts->AddFontDefault();
-  if (!fonts.bold) fonts.bold = fonts.regular;
-  io.FontDefault = fonts.regular;
-  boot_log(std::string("fonts: ") + (file_exists(regular) ? "malgun.ttf" : "default") + ", " +
-           (file_exists(bold) ? "malgunbd.ttf" : "regular") + strf_scale(scale));
+  // Fonts are embedded as RCDATA: Pretendard (text) + JetBrains Mono (numbers), both OFL, with the Lucide icon
+  // subset (ISC) merged into the text fonts. If the resources are missing, fall back to the system Malgun Gothic.
+  const ally::ui::Fonts fonts = load_fonts(io);
+  boot_log(std::string("fonts: ") + (fonts.embedded ? "embedded Pretendard + JetBrains Mono + Lucide" : "system fallback") +
+           strf_scale(scale));
 
   ImGui_ImplWin32_Init(g_hwnd);
   ImGui_ImplDX11_Init(g_device, g_ctx);
@@ -435,6 +482,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
   {
     ally::ui::GuiApp app(plat, settings, fonts);
     if (!demo_host.empty()) app.set_demo_connect(demo_host, demo_base, demo_tab);
+    if (!demo_state.empty()) app.set_demo_state(demo_state);
     boot_log("ui ready");
     int frames = 0;
     const double smoke_start = ally::mono_now();
@@ -476,7 +524,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
       ImGui::NewFrame();
       app.frame(ally::mono_now());
       ImGui::Render();
-      const float clear[4] = {0.09f, 0.10f, 0.12f, 1.0f};
+      const float clear[4] = {0x13 / 255.0f, 0x16 / 255.0f, 0x1B / 255.0f, 1.0f};  // bg1 token
       g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
       g_ctx->ClearRenderTargetView(g_rtv, clear);
       ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());

@@ -82,7 +82,8 @@ std::string settings_to_json(const Settings& s) {
     << "  \"fps_cap\": " << s.fps_cap << ",\n"
     << "  \"camera_on\": " << json::boolean(s.camera_on) << ",\n"
     << "  \"allow_drive_while_arm\": " << json::boolean(s.allow_drive_while_arm) << ",\n"
-    << "  \"show_crosshair\": " << json::boolean(s.show_crosshair) << "\n"
+    << "  \"show_crosshair\": " << json::boolean(s.show_crosshair) << ",\n"
+    << "  \"font_scale\": " << json::number(s.font_scale) << "\n"
     << "}\n";
   return o.str();
 }
@@ -132,6 +133,7 @@ bool settings_from_json(const std::string& text, Settings* s, std::string* err) 
   bln("camera_on", &s->camera_on);
   bln("allow_drive_while_arm", &s->allow_drive_while_arm);
   bln("show_crosshair", &s->show_crosshair);
+  flt("font_scale", &s->font_scale, 1.0, 1.3);
   return true;
 }
 

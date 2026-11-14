@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(armpi_ally_controller VERSION 0.1.0 LANGUAGES CXX)
+project(armpi_ally_controller VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -76,7 +76,10 @@ if(WIN32 AND EXISTS ${CMAKE_SOURCE_DIR}/src/app/gui_main.cpp)
   target_include_directories(imgui SYSTEM PUBLIC third_party/imgui third_party/imgui/backends)
   # We own the gamepad (XInput in src/input/pad.cpp); ImGui must not read it too.
   target_compile_definitions(imgui PUBLIC UNICODE _UNICODE IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
-  add_executable(armpi-ally WIN32 src/app/gui_main.cpp src/app/gui_app.cpp res/app.rc)
+  # Embedded fonts (absolute paths so windres finds them from the build directory)
+  configure_file(res/fonts.rc.in ${CMAKE_BINARY_DIR}/fonts.rc @ONLY)
+  add_executable(armpi-ally WIN32 src/app/gui_main.cpp src/app/gui_app.cpp src/app/ui_theme.cpp src/app/ui_widgets.cpp
+                                  res/app.rc ${CMAKE_BINARY_DIR}/fonts.rc)
   target_link_libraries(armpi-ally PRIVATE ally_core imgui d3d11 dxgi d3dcompiler dwmapi winmm shell32
                                            ${ALLY_STATIC_LINK})
   target_compile_options(armpi-ally PRIVATE ${ALLY_WARNINGS} ${ALLY_HARDEN})

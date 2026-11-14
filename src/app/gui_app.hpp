@@ -1,9 +1,9 @@
 // GuiApp: the whole touch/gamepad UI (Dear ImGui), independent of the Win32/D3D11 layer.
 // The platform layer calls frame() between ImGui::NewFrame() and ImGui::Render().
+// Look and layout follow docs/DESIGN_PLAN_v001.md; tokens and widgets live in ui_theme / ui_widgets.
 #pragma once
 
 #include <atomic>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -11,6 +11,8 @@
 #include <thread>
 #include <vector>
 
+#include "app/ui_theme.hpp"
+#include "app/ui_widgets.hpp"
 #include "common/settings.hpp"
 #include "common/util.hpp"
 #include "imgui.h"
@@ -33,11 +35,6 @@ struct Platform {
   std::function<void(const std::string& utf8_path)> open_folder;
 };
 
-struct Fonts {
-  ImFont* regular{nullptr};
-  ImFont* bold{nullptr};
-};
-
 class GuiApp {
  public:
   GuiApp(Platform p, Settings s, Fonts fonts);
@@ -49,6 +46,8 @@ class GuiApp {
   // Test/demo run: connect to host with ports base+1 / base+4090 / base+3080 on the first frame.
   // These ports and this host are used for this run only and are never written to settings.json.
   void set_demo_connect(const std::string& host, int port_base, const std::string& tab);
+  // Screenshot-only display states: "estop" (latch an e-stop on the mock robot), "cambig" (full camera).
+  void set_demo_state(const std::string& state) { demo_state_ = state; }
   void frame(double now);
   void shutdown();  // neutral + disconnect, rumble off, save settings
   const Settings& settings() const { return settings_; }
@@ -56,39 +55,32 @@ class GuiApp {
 
  private:
   enum class Tab { kDrive, kArm, kDiag, kSettings };
-  struct Note {
-    std::string text;
-    ImU32 color;
-    double until;
-  };
 
   void connect(const std::string& host);
   void disconnect();
   void start_discovery();
   void handle_input(double now);
   void handle_cues(double now);
-  void notify(const std::string& text, ImU32 color, double secs = 3.0);
+  void notify(const std::string& text, Status kind, double secs = 3.0);
   void save();
+  void trigger_estop(double now);
 
-  // drawing
-  void draw_top_bar(double now);
-  void draw_camera(ImVec2 size, double now);
-  void draw_side_column(ImVec2 size, double now);
-  void draw_bottom_bar(ImVec2 size);
-  void draw_tab_drive();
-  void draw_tab_arm();
-  void draw_tab_diag();
-  void draw_tab_settings();
-  void draw_connect_panel(ImVec2 size);
+  // drawing (screen rectangles in pixels)
+  void draw_top_bar(ImVec2 p0, ImVec2 size);
+  void draw_camera(ImVec2 p0, ImVec2 size);
+  void draw_safety_column(ImVec2 p0, ImVec2 size);
+  void draw_bottom_bar(ImVec2 p0, ImVec2 size);
+  void draw_tab_panel(ImVec2 p0, ImVec2 size);
+  void draw_tab_drive(ImVec2 size);
+  void draw_tab_arm(ImVec2 size);
+  void draw_tab_diag(ImVec2 size);
+  void draw_tab_settings(ImVec2 size);
+  void draw_connect_left(ImVec2 p0, ImVec2 size);
+  void draw_connect_right(ImVec2 p0, ImVec2 size);
   void arm_plot(const char* id, ImVec2 size, bool top_view);
-  bool hold_button(const char* id, const char* label, ImVec2 size, double hold_s, ImU32 color, float* progress);
-  bool virtual_stick(const char* id, float radius, float* x, float* y);
-  void chip(const char* text, ImU32 bg, ImU32 fg = IM_COL32(255, 255, 255, 255));
-  float S(float px) const { return px * scale_; }
 
   Platform plat_;
   Settings settings_;
-  Fonts fonts_;
   EventLog log_;
   net::CommLog comm_;
   std::unique_ptr<robot::RobotCore> core_;
@@ -97,22 +89,20 @@ class GuiApp {
   input::Mapper mapper_;
 
   bool focused_{true};
-  float scale_{1.0f};
-  float chip_limit_x_{0.0f};  // top bar: chips past this x are skipped (tabs live there)
   Tab tab_{Tab::kDrive};
   bool camera_big_{false};
   bool show_connect_{true};
-  std::deque<Note> notes_;
+  std::vector<w::Toast> toasts_;
   robot::Cues last_cues_;
   bool cues_init_{false};
   double last_service_seen_{0.0};
+  double estop_flash_until_{0.0};
 
   // touch controls (written by widgets, read next frame by the mapper)
   input::TouchControls touch_;
   bool touch_arm_toggle_{false};
   bool prev_arm_hold_{false};
   float clear_progress_pad_{0.0f};
-  float clear_progress_touch_{0.0f};
   input::PadState last_pad_;
   bool pad_was_connected_{false};
 
@@ -131,15 +121,16 @@ class GuiApp {
   std::string discover_error_;
 
   // arm tab inputs
-  float num_x_{0.15f}, num_y_{0.0f}, num_z_{0.08f}, num_pitch_deg_{-60.0f}, num_grip_{0.0f};
-  // joint debug sliders (deg)
+  float num_[4]{0.15f, 0.0f, 0.08f, -60.0f};  // x, y, z (m), pitch (deg)
+  float num_grip_{0.0f};
   float joints_deg_[6]{0, 0, 0, 0, 0, 0};
-  // robot-wide reset confirmation
   bool confirm_reset_{false};
 
   std::string demo_host_;
   int demo_base_{0};
   bool demo_pending_{false};
+  std::string demo_state_;
+  bool demo_state_done_{false};
   int ally_batt_{-1};
   bool ally_ac_{false};
   double next_power_poll_{0.0};
