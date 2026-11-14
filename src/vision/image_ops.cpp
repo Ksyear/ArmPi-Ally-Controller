@@ -168,8 +168,31 @@ std::vector<Blob> connected_components(const Mask& m, int min_area, int max_blob
       if (edge) ++a.boundary;
     }
   }
+  // third pass: boundary distances to each blob's centroid (radial spread, rotation invariant)
+  struct Rad {
+    double s{0}, ss{0};
+    int n{0};
+  };
+  std::vector<Rad> rad(acc.size());
+  for (int y = 0; y < m.h; ++y) {
+    for (int x = 0; x < m.w; ++x) {
+      const size_t i = static_cast<size_t>(y) * m.w + x;
+      if (label[i] < 0) continue;
+      const bool edge = x == 0 || y == 0 || x == m.w - 1 || y == m.h - 1 || !m.px[i - 1] || !m.px[i + 1] ||
+                        !m.px[i - static_cast<size_t>(m.w)] || !m.px[i + static_cast<size_t>(m.w)];
+      if (!edge) continue;
+      const size_t k = static_cast<size_t>(root_index[static_cast<size_t>(find_root(parent, label[i]))]);
+      const Acc& a = acc[k];
+      if (a.area < min_area) continue;
+      const double d = std::hypot(x - a.sx / a.area, y - a.sy / a.area);
+      rad[k].s += d;
+      rad[k].ss += d * d;
+      ++rad[k].n;
+    }
+  }
   constexpr double kPi = 3.14159265358979323846;
-  for (const Acc& a : acc) {
+  for (size_t k = 0; k < acc.size(); ++k) {
+    const Acc& a = acc[k];
     if (a.area < min_area) continue;
     Blob b;
     b.area = static_cast<int>(a.area);
@@ -192,6 +215,12 @@ std::vector<Blob> connected_components(const Mask& m, int min_area, int max_blob
     const double disc = std::sqrt(std::max(0.0, tr * tr / 4 - det));
     const double l1 = tr / 2 + disc + 1.0 / 12, l2 = std::max(1e-9, tr / 2 - disc + 1.0 / 12);  // +1/12: pixel area
     b.oriented_fill = static_cast<float>(a.area / (12.0 * std::sqrt(l1 * l2)));
+    if (rad[k].n > 0) {
+      const double mean = rad[k].s / rad[k].n;
+      const double var = std::max(0.0, rad[k].ss / rad[k].n - mean * mean);
+      b.mean_radius = static_cast<float>(mean);
+      b.radial_cv = mean > 1e-6 ? static_cast<float>(std::sqrt(var) / mean) : 1.0f;
+    }
     blobs.push_back(b);
   }
   std::sort(blobs.begin(), blobs.end(), [](const Blob& p, const Blob& q) { return p.area > q.area; });

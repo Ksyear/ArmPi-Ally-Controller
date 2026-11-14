@@ -186,6 +186,14 @@ bool write_text_file_atomic(const std::string& path, const std::string& text, st
       return false;
     }
     f << text;
+    f.flush();
+    if (!f) {  // disk full / write error: keep the old file, never rename a half-written one over it
+      f.close();
+      std::error_code rm;
+      fs::remove(tmp, rm);
+      if (err) *err = "저장 실패(쓰기 오류)";
+      return false;
+    }
   }
   std::error_code ec;
   fs::rename(tmp, p, ec);

@@ -1,5 +1,7 @@
 #include "robot/rosbridge.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <chrono>
 
 #include "armpi_common/json.hpp"
@@ -9,6 +11,10 @@ namespace ally::robot {
 namespace json = armpi_common::json;
 
 namespace {
+
+// A counter from the network: finite, positive, and below 1e15 before it becomes an integer (converting a huge or
+// non-finite double to an integer is undefined behaviour in C++).
+uint64_t to_count(double v) { return std::isfinite(v) && v > 0 ? static_cast<uint64_t>(std::min(v, 1e15)) : 0; }
 
 const json::Value* field(const json::Value* v, const char* k) { return v ? v->find(k) : nullptr; }
 
@@ -264,9 +270,9 @@ void RosBridge::handle_message(const std::string& text) {
         if (const auto* p = s.find("packets"); p && p->is_object()) {
           if (const auto* a = p->find("arm_adjust"); a && a->is_object()) {
             for (const auto& kv : a->object)
-              if (kv.second.is_number() && kv.second.number > 0) b.arm_adjust_total += static_cast<uint64_t>(kv.second.number);
+              if (kv.second.is_number()) b.arm_adjust_total += to_count(kv.second.number);
           } else if (a && a->is_number()) {
-            b.arm_adjust_total = static_cast<uint64_t>(a->number);
+            b.arm_adjust_total = to_count(a->number);
           }
         }
         std::lock_guard<std::mutex> lk(mu_);

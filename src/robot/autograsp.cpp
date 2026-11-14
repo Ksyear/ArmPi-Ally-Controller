@@ -137,11 +137,13 @@ std::optional<GraspPlan> GraspPlanner::plan(const vision::VisionCalib& calib, do
 std::vector<std::pair<float, float>> GraspPlanner::reach_band_pixels(const vision::VisionCalib& calib, int samples) const {
   std::vector<std::pair<float, float>> out;
   if (!calib.H.valid || !calib.z_table || samples < 2) return out;
-  const double zg = *calib.z_table + 0.012;  // a typical block grasp height
+  const double zg = *calib.z_table + std::max(0.012, opt_.floor_margin);  // a typical block grasp height
   auto ok = [&](double x, double y) {
     for (const double deg : {-90.0, -75.0, -60.0, -50.0}) {
       const double p = deg * kDeg;
-      if (robot_.reachable(ArmTarget{x, y, zg, p, 0.0}) && robot_.reachable(ArmTarget{x, y, zg + opt_.hover_dz, p, 0.0}))
+      // Same three poses as plan_at(): grasp, hover and lift must all be reachable at one pitch.
+      if (robot_.reachable(ArmTarget{x, y, zg, p, 0.0}) && robot_.reachable(ArmTarget{x, y, zg + opt_.hover_dz, p, 0.0}) &&
+          robot_.reachable(ArmTarget{x, y, zg + opt_.lift_dz, p, 0.5}))
         return true;
     }
     return false;

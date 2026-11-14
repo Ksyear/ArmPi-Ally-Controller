@@ -1,4 +1,4 @@
-// armpi_ally_cli: console companion of the GUI.
+// armpi-ally-cli: console companion of the GUI.
 //   discover            find robots on the local network (UDP 5002)
 //   selftest --robot IP run the whole non-GUI stack against a robot or the mock robot, print PASS/FAIL
 //   grasp-selftest      autograsp end to end: detect -> plan -> pick -> verify, then dead-man pause and e-stop abort
@@ -69,16 +69,16 @@ void usage() {
   std::printf(
       "ArmPi Ally CLI %s\n"
       "사용법:\n"
-      "  armpi_ally_cli discover [--target IP]... [--timeout 초] [--discovery-port N]\n"
-      "  armpi_ally_cli selftest --robot IP [--no-camera] [--no-rosbridge] [--no-drive]\n"
+      "  armpi-ally-cli discover [--target IP]... [--timeout 초] [--discovery-port N]\n"
+      "  armpi-ally-cli selftest --robot IP [--no-camera] [--no-rosbridge] [--no-drive]\n"
       "                          [--port N] [--rosbridge-port N] [--camera-port N | --camera-url URL]\n"
-      "  armpi_ally_cli grasp-selftest --robot IP --camera-url URL --calib vision_calib.json\n"
+      "  armpi-ally-cli grasp-selftest --robot IP --camera-url URL --calib vision_calib.json\n"
       "                          [--class 이름] [--object N] [--expect-xy X,Y] [--port N] [--rosbridge-port N]\n"
       "                          [--approach-class 이름 --approach-object N]  (팔 범위 밖 물체로 차체 접근 시험)\n"
       "                          [--yes-arm-moves]  (127.0.0.1 이 아닌 로봇에서는 필수: 데드맨 없이 팔·차체가 움직임)\n"
-      "  armpi_ally_cli pads [--seconds N] [--rumble 밀리초]\n"
-      "  armpi_ally_cli tilt [--seconds N]   (기울기 센서 값과 기울기 주행 값 보기, 로봇에는 아무것도 보내지 않음)\n"
-      "  armpi_ally_cli version\n",
+      "  armpi-ally-cli pads [--seconds N] [--rumble 밀리초]\n"
+      "  armpi-ally-cli tilt [--seconds N]   (기울기 센서 값과 기울기 주행 값 보기, 로봇에는 아무것도 보내지 않음)\n"
+      "  armpi-ally-cli version\n",
       kVersion);
 }
 

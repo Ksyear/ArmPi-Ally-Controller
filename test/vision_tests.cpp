@@ -51,6 +51,16 @@ struct Rgba {
     for (int y = y0; y < y0 + side; ++y)
       for (int x = x0; x < x0 + side; ++x) set(x, y, r, g, b);
   }
+  // Square of the given side turned by deg around its centre (pixel centres inside are filled).
+  void rotated_square(float cx, float cy, float side, float deg, uint8_t r, uint8_t g, uint8_t b) {
+    const float c = std::cos(deg * 3.14159265f / 180.0f), s = std::sin(deg * 3.14159265f / 180.0f), h = side / 2.0f;
+    const int reach = static_cast<int>(side) + 2;
+    for (int y = static_cast<int>(cy) - reach; y <= static_cast<int>(cy) + reach; ++y)
+      for (int x = static_cast<int>(cx) - reach; x <= static_cast<int>(cx) + reach; ++x) {
+        const float dx = x + 0.5f - cx, dy = y + 0.5f - cy;
+        if (std::fabs(c * dx + s * dy) <= h && std::fabs(-s * dx + c * dy) <= h) set(x, y, r, g, b);
+      }
+  }
   void disc(float cx, float cy, float rad, uint8_t r, uint8_t g, uint8_t b) {
     for (int y = static_cast<int>(cy - rad) - 1; y <= static_cast<int>(cy + rad) + 1; ++y)
       for (int x = static_cast<int>(cx - rad) - 1; x <= static_cast<int>(cx + rad) + 1; ++x)
@@ -150,6 +160,50 @@ void test_blobs() {
   }
   // max_blobs cap
   CHECK(vision::connected_components(red, 15, 1).size() == 1);
+}
+
+// Ball vs block: a block turned 45° has a higher area/perimeter² than a pixelated disc, so the
+// shape test uses how evenly the boundary sits around the centre (radial_cv) instead.
+void test_shapes() {
+  vision::Detector det;
+  const auto cls = det.classes();
+  const int red_cube = class_named(cls, "빨간 블록"), red_ball = class_named(cls, "빨간 공");
+  CHECK(red_cube >= 0 && red_ball >= 0);
+  for (const float side : {34.0f, 46.0f, 60.0f}) {
+    for (const float deg : {0.0f, 15.0f, 30.0f, 45.0f, 60.0f}) {
+      Rgba img(640, 480);
+      img.rotated_square(320, 240, side, deg, 220, 30, 30);
+      const auto d = det.detect_rgba(img.px.data(), img.w, img.h, nullptr);
+      const bool ok = d.items.size() == 1 && d.items[0].class_index == red_cube;
+      CHECK(ok);
+      if (!ok) std::printf("    square side %.0f at %.0f deg: %zu item(s)%s\n", side, deg, d.items.size(),
+                           d.items.empty() ? "" : (d.items[0].class_index == red_ball ? ", seen as ball" : ""));
+    }
+  }
+  for (const float rad : {14.0f, 20.0f, 30.0f, 45.0f}) {
+    Rgba img(640, 480);
+    img.disc(300.3f, 250.7f, rad, 220, 30, 30);
+    const auto d = det.detect_rgba(img.px.data(), img.w, img.h, nullptr);
+    const bool ok = d.items.size() == 1 && d.items[0].class_index == red_ball;
+    CHECK(ok);
+    if (!ok) std::printf("    disc r %.0f: %zu item(s)\n", rad, d.items.size());
+  }
+  // radial_cv itself, on the same half-scale masks the detector uses
+  auto cv_of = [](const Rgba& img) {
+    const auto hsv = vision::rgba_to_hsv_downscaled(img.px.data(), img.w, img.h, 2);
+    vision::Mask m = vision::threshold(hsv, vision::HsvRange{345, 15, 0.45f, 1.0f, 0.25f, 1.0f});
+    vision::erode3(m);
+    vision::dilate3(m);
+    const auto b = vision::connected_components(m, 15, 4);
+    return b.size() == 1 ? b[0].radial_cv : -1.0f;
+  };
+  Rgba disc(640, 480), sq0(640, 480), sq45(640, 480);
+  disc.disc(320, 240, 30, 220, 30, 30);
+  sq0.rotated_square(320, 240, 46, 0, 220, 30, 30);
+  sq45.rotated_square(320, 240, 46, 45, 220, 30, 30);
+  const float cd = cv_of(disc), c0 = cv_of(sq0), c45 = cv_of(sq45);
+  CHECK(cd >= 0 && cd < 0.04f);
+  CHECK(c0 > 0.08f && c45 > 0.08f);
 }
 
 void test_detector() {
@@ -499,6 +553,14 @@ void test_planner() {
       inside_far = !inside_far;
   }
   CHECK(!inside_far);
+  // Every band edge point is a spot the planner accepts (grasp, hover and lift all reachable).
+  int plannable = 0;
+  for (const auto& pt : band) {
+    double bx = 0, by = 0;
+    if (calib.pixel_to_table(pt.first, pt.second, 0, &bx, &by) && pl.plan_at(calib, bx, by, cube, &err)) ++plannable;
+  }
+  CHECK(plannable == static_cast<int>(band.size()));
+  if (plannable != static_cast<int>(band.size())) std::printf("    band: %d of %zu edge points plannable\n", plannable, band.size());
 }
 
 void test_sequencer_full() {
@@ -834,6 +896,7 @@ int main() {
   const std::vector<std::pair<const char*, std::function<void()>>> tests = {
       {"hsv", test_hsv},
       {"blobs", test_blobs},
+      {"shapes", test_shapes},
       {"detector", test_detector},
       {"homography", test_homography},
       {"calib", test_calib},

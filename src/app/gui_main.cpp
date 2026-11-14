@@ -612,14 +612,16 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
     else if (a == L"--demo-touch") g_dt.on = true;
   }
   if (argv) LocalFree(argv);
-  {
-    const std::wstring boot = to_wide(ally::settings_dir() + "/boot.log");
-    g_boot = _wfopen(boot.c_str(), L"w");
-    boot_log(std::string(ally::kAppName) + " " + ally::kVersion + (g_smoke ? " (smoke test)" : ""));
-  }
   // One controller per device: two copies would fight over the robot session and the gamepad.
   HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\ArmPiAllyController.SingleInstance");
-  if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
+  const bool second = single && GetLastError() == ERROR_ALREADY_EXISTS;
+  {
+    // A second copy appends, so it never wipes the running copy's start-up log.
+    const std::wstring boot = to_wide(ally::settings_dir() + "/boot.log");
+    g_boot = _wfopen(boot.c_str(), second ? L"a" : L"w");
+    boot_log(std::string(ally::kAppName) + " " + ally::kVersion + (g_smoke ? " (smoke test)" : ""));
+  }
+  if (second) {
     boot_log("already running");
     if (!g_smoke) MessageBoxW(nullptr, L"ArmPi Ally Controller가 이미 실행 중입니다.", L"ArmPi Ally Controller", MB_ICONINFORMATION);
     return 0;

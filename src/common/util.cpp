@@ -239,8 +239,10 @@ std::string mask_addresses(std::string_view s) {
 }
 
 std::string printable(std::string_view s, size_t max_len) {
+  // Escape control bytes, then cut on a UTF-8 character boundary so a Korean name is never split mid-letter.
   std::string out;
-  for (size_t i = 0; i < s.size() && out.size() < max_len; ++i) {
+  size_t i = 0;
+  for (; i < s.size() && out.size() < max_len + 4; ++i) {
     const unsigned char c = static_cast<unsigned char>(s[i]);
     if (c >= 32 && c != 127) {
       out.push_back(static_cast<char>(c));
@@ -250,8 +252,8 @@ std::string printable(std::string_view s, size_t max_len) {
       out += b;
     }
   }
-  if (out.size() >= max_len) out += "…";
-  return out;
+  if (i == s.size() && out.size() <= max_len) return out;
+  return utf8_truncate(out, max_len);
 }
 
 std::string hex_dump_line(std::string_view s, size_t max_bytes) {

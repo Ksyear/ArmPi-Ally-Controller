@@ -172,8 +172,13 @@ int WebSocketClient::receive(std::string* msg, double timeout_s, std::string* er
         continue;
       }
       if (op == 0x0 && in_frag_) {
+        if (frag_.size() + payload.size() > kMaxMessageBytes) {  // check before joining: never hold twice the cap
+          if (err) *err = "WebSocket 메시지가 너무 큼";
+          in_frag_ = false;
+          frag_.clear();
+          return -1;
+        }
         frag_ += payload;
-        if (frag_.size() > kMaxMessageBytes) return -1;
         if (fin) {
           in_frag_ = false;
           *msg = std::move(frag_);

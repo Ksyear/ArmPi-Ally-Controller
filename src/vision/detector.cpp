@@ -33,10 +33,10 @@ std::vector<ObjectClass> Detector::classes() const {
 }
 
 float shape_score(const Blob& b, Shape s, const DetectorParams& p) {
-  const bool round = b.circularity >= p.ball_circ_min;
+  const bool round = b.radial_cv <= p.ball_cv_max;
   switch (s) {
     case Shape::kBall:
-      return round ? std::min(1.0f, 0.6f + 0.4f * (b.circularity - p.ball_circ_min) / (1.0f - p.ball_circ_min + 1e-3f)) : 0.0f;
+      return round ? std::min(1.0f, 0.6f + 0.4f * (1.0f - b.radial_cv / (p.ball_cv_max + 1e-6f))) : 0.0f;
     case Shape::kCube:
       if (round || b.oriented_fill < p.cube_ofill_min) return 0.0f;
       return std::min(1.0f, 0.6f + 0.4f * (b.oriented_fill - p.cube_ofill_min) / (1.0f - p.cube_ofill_min + 1e-3f));

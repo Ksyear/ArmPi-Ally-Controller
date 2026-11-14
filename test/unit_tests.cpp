@@ -233,6 +233,11 @@ static void test_security_limits() {
   // Log/notification text is cut on a UTF-8 boundary.
   CHECK(utf8_truncate("한글abc", 4) == "한…");
   CHECK(utf8_truncate("abc", 10) == "abc");
+  // printable() escapes control bytes and also cuts on a character boundary.
+  CHECK(printable("한글abc", 4) == "한…");
+  CHECK(printable("a\x01" "b", 400) == "a\\x01b");
+  CHECK(printable("abcdef", 6) == "abcdef");
+  CHECK(printable("abcdefg", 6) == "abcdef…");
   // The session id / nonces depend on std::random_device: it must not be deterministic.
   std::random_device rd;
   bool differ = false;
