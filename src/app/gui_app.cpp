@@ -506,7 +506,10 @@ void GuiApp::frame(double now) {
   draw_top_bar(ImVec2(0, 0), ImVec2(W, top_h));
   if (connect_screen) {
     draw_connect_left(ImVec2(g, body_y), ImVec2(panel_x - 2 * g, body_h));
-    draw_connect_right(ImVec2(panel_x, body_y), ImVec2(panel_w, body_h));
+    // Settings work without a robot (ports, input, tilt driving...); every other tab needs a connection.
+    if (!core_ && tab_ == Tab::kSettings) draw_tab_panel(ImVec2(panel_x, body_y), ImVec2(panel_w, body_h));
+    else draw_connect_right(ImVec2(panel_x, body_y), ImVec2(panel_w, body_h));
+    w::toast_stack(ImGui::GetWindowDrawList(), ImVec2((g + panel_x - g) * 0.5f, body_y + S(sp::s5) + S(48)), S(720), toasts_, now);
   } else {
     draw_camera(ImVec2(g, body_y), ImVec2(cam_w, body_h));
     if (!big) draw_tab_panel(ImVec2(panel_x, body_y), ImVec2(panel_w, body_h));
@@ -583,7 +586,9 @@ void GuiApp::draw_top_bar(ImVec2 p0, ImVec2 size) {
   const char* tabs[] = {"주행", "팔", "집기", "진단", "설정"};
   const char* tab_icons[] = {icon::kGauge, icon::kBot, icon::kBox, icon::kActivity, icon::kSettings};
   const ImVec2 seg_item(S(100), S(40));
-  const float seg_x = p0.x + size.x - S(sp::gutter) - seg_item.x * 5;
+  const ImVec2 quit_sz(S(48), S(40));
+  const float quit_x = p0.x + size.x - S(sp::gutter) - quit_sz.x;
+  const float seg_x = quit_x - S(sp::s3) - seg_item.x * 5;
   const float cy = p0.y + size.y * 0.5f;
 
   // left group
@@ -609,11 +614,31 @@ void GuiApp::draw_top_bar(ImVec2 p0, ImVec2 size) {
     rx -= S(sp::s5);
   }
   ImGui::SetCursorScreenPos(ImVec2(seg_x, cy - seg_item.y * 0.5f));
-  const int clicked = w::segmented("modes", tabs, tab_icons, 5, show_connect_ && core_ ? -1 : (core_ ? static_cast<int>(tab_) : -1), seg_item, false);
+  const int current = core_ ? (show_connect_ ? -1 : static_cast<int>(tab_)) : (tab_ == Tab::kSettings ? static_cast<int>(Tab::kSettings) : -1);
+  const int clicked = w::segmented("modes", tabs, tab_icons, 5, current, seg_item, false);
   if (clicked >= 0) {
-    tab_ = static_cast<Tab>(clicked);
-    if (core_) show_connect_ = false;
-    camera_big_ = false;
+    const Tab t = static_cast<Tab>(clicked);
+    if (!core_ && t != Tab::kSettings) {
+      tab_ = Tab::kDrive;  // back to the connect screen
+      notify(std::string(tabs[clicked]) + " 탭은 로봇에 연결하면 쓸 수 있습니다 — 로봇 찾기 또는 주소 입력", Status::kWarn, 3.0);
+    } else {
+      tab_ = t;
+      if (core_) show_connect_ = false;
+      camera_big_ = false;
+    }
+  }
+  // Quit: two taps within 3 s (a single stray tap never closes the app). Quitting sends neutral + disconnect first.
+  const double now = ctx().now;
+  const bool armed = now < quit_armed_until_;
+  ImGui::SetCursorScreenPos(ImVec2(quit_x, cy - quit_sz.y * 0.5f));
+  if (w::button("quit_top", "", quit_sz, armed ? w::Variant::kDanger : w::Variant::kGhost, icon::kPower)) {
+    if (armed) {
+      log_.info("상단 전원 버튼으로 종료");
+      if (plat_.quit) plat_.quit();
+    } else {
+      quit_armed_until_ = now + 3.0;
+      notify("한 번 더 누르면 앱을 끕니다(로봇은 중립으로 두고 연결을 끊음)", Status::kWarn, 3.0);
+    }
   }
 }
 

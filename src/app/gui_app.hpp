@@ -174,6 +174,7 @@ class GuiApp {
   std::optional<vision::HsvRange> color_sample_;
   uint32_t color_sample_rgb_{0};
   bool user_active_{false};
+  double quit_armed_until_{0.0};  // top-bar quit button: second tap before this time quits
   // tilt driving (RT held): sensor, reference pose captured on the press, current output for the HUD
   input::TiltSensor tilt_;
   bool tilt_tried_{false}, tilt_on_{false}, tilt_armed_{false}, tilt_warned_{false}, tilt_ref_set_{false};

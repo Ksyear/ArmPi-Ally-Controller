@@ -605,7 +605,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
 
   {
     ally::ui::GuiApp app(plat, settings, fonts);
-    if (!demo_host.empty()) app.set_demo_connect(demo_host, demo_base, demo_tab);
+    if (!demo_host.empty() || !demo_tab.empty()) app.set_demo_connect(demo_host, demo_base, demo_tab);
     if (!demo_state.empty()) app.set_demo_state(demo_state);
     if (!demo_calib.empty()) app.set_demo_calib(demo_calib);
     boot_log("ui ready");
