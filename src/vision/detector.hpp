@@ -49,8 +49,8 @@ struct DetectorParams {
   int min_area_px{60};   // in original pixels
   int max_blobs{12};
   // Ball = boundary distances to the centroid nearly constant (radial_cv). Measured on the detector pipeline:
-  // discs 0.012-0.041 (radius >= 12 px), squares >= 0.088 at any rotation (side >= 30 px). 4*pi*A/P^2 is not used:
-  // the boundary-pixel perimeter estimate makes a 45-degree square look rounder than a disc.
+  // discs 0.012-0.048 (radius >= 10 px), squares 0.076-0.125 at 0-60 degrees (side 30-60 px). 4*pi*A/P^2 is not
+  // used: the boundary-pixel perimeter estimate makes a 45-degree square look rounder than a disc.
   float ball_cv_max{0.06f};
   float cube_ofill_min{0.82f};
   float match_radius_px{40};

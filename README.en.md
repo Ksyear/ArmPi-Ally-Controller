@@ -68,6 +68,6 @@ tools       synthetic camera for tests
 
 ## Limitations
 
-Not yet tested on the real robot. Object picking assumes single-colour blocks and balls on a flat table (balls under about 25 px across can be confused with blocks) and uses commanded (not measured) arm positions. Base approach and the intrusion check are experimental and off by default. The tilt direction was derived from the sensor axes and still needs a hands-on check. Code is not signed (Windows Smart App Control blocks unsigned exes).
+Not yet tested on the real robot. Object picking assumes single-colour blocks and balls on a flat table (objects about 20 px across in the image can be confused: a 20 px block turned 45° reads as a ball, a ball of radius 8 px as a block) and uses commanded (not measured) arm positions. Base approach and the intrusion check are experimental and off by default. The tilt direction was derived from the sensor axes and still needs a hands-on check. Code is not signed (Windows Smart App Control blocks unsigned exes).
 
 Documentation is mostly in Korean; this page is the English summary.

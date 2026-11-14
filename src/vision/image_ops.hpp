@@ -43,7 +43,7 @@ struct Blob {
   float oriented_fill{0};          // area / (12*sqrt(l1*l2)): ~1 for any rectangle, ~1.05 disc
   float aspect{1};                 // bbox width / height
   // Spread of the boundary pixels' distances to the centroid (std / mean). Rotation invariant: a disc is close to
-  // 0 (pixel steps only), a square about 0.11 at any angle. Used to tell balls from blocks.
+  // 0 (pixel steps only), a square about 0.11 at any angle (0.08-0.12 after pixelation). Used to tell balls from blocks.
   float radial_cv{1};
   float mean_radius{0};            // mean boundary distance to the centroid (pixels)
 };
