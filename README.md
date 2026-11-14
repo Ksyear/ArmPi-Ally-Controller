@@ -85,7 +85,7 @@ scripts/build_mac.sh
 
 ## 실행
 
-1. Ally와 로봇을 같은 와이파이에 둔다. Armoury Crate는 **게임패드 모드**여야 내장 패드가 잡힌다.
+1. Ally와 로봇을 같은 와이파이에 둔다. Armoury Crate는 **게임패드 모드**여야 내장 패드가 잡힌다. 평소 버튼·스틱을 바꿔 쓴다면 이 앱을 Armoury Crate SE 게임 라이브러리에 추가해 **앱 전용 프로필을 기본 배치로** 두는 것을 권한다(아래 조작표의 'Armoury Crate SE' 절).
 2. `armpi-ally.exe` 실행 → "로봇 찾기" 또는 IP 입력 → 연결.
 3. 처음에는 **바퀴를 띄우고** 속도 10–30 %로 시작한다. [`docs/SAFETY_KO.md`](docs/SAFETY_KO.md)
 

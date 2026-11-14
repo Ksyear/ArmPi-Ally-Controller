@@ -54,6 +54,10 @@ src/input   XInput pad + haptics, input mapper, tilt sensor
 src/app     GUI (Win32/D3D11/ImGui) and console tool
 ```
 
+## Armoury Crate SE
+
+The app reads the XInput pad that Armoury Crate SE exposes. Add `armpi-ally.exe` to the Armoury Crate SE game library and give it its own profile with the default layout and gamepad mode; otherwise the device-wide custom mappings (button swaps, gyro-to-stick, macros) apply to the robot controls too.
+
 ## Limitations
 
 Not yet tested on the real robot. Object picking assumes single-colour blocks and balls on a flat table and uses commanded (not measured) arm positions. Base approach and the intrusion check are experimental and off by default. Code is not signed (Windows Smart App Control blocks unsigned exes).
