@@ -1,0 +1,41 @@
+name: ci
+on: [push, pull_request]
+
+# Read-only token: CI only builds and tests.
+permissions:
+  contents: read
+
+jobs:
+  windows-cross:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - run: sudo apt-get update && sudo apt-get install -y mingw-w64 cmake
+      - run: scripts/build_win.sh
+      - name: check PE hardening (ASLR, high-entropy ASLR, DEP)
+        run: |
+          for exe in build-win/armpi-ally.exe build-win/armpi-ally-cli.exe; do
+            flags=$(x86_64-w64-mingw32-objdump -p "$exe" | grep -A3 DllCharacteristics)
+            echo "$exe: $flags"
+            for f in DYNAMIC_BASE HIGH_ENTROPY_VA NX_COMPAT; do grep -q "$f" <<<"$flags" || { echo "missing $f"; exit 1; }; done
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: armpi-ally-win64
+          path: |
+            build-win/armpi-ally.exe
+            build-win/armpi-ally-cli.exe
+
+  unit-and-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake g++
+      - run: scripts/build_mac.sh
+      - name: mock robot end-to-end
+        run: |
+          # The mock robot comes from the robot repository, pinned to the commit the shared code was copied from.
+          git init -q /tmp/armpro
+          git -C /tmp/armpro fetch -q --depth 1 https://github.com/Ksyear/ArmPro_Cpp_ROS2 4ab02adc9cc35542f6b8532dd98c85d92129b36c
+          git -C /tmp/armpro checkout -q FETCH_HEAD
+          test/e2e_mock.sh /tmp/armpro build-mac

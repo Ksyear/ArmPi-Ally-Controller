@@ -1,0 +1,23 @@
+These files are copied without modification from the ArmPro_Cpp_ROS2 project
+(https://github.com/Ksyear/ArmPro_Cpp_ROS2), licensed under the Apache License, Version 2.0.
+
+Source: branch feat/arm-target-nearest-logind, commit 4ab02ad (byte-identical copies, checked 2026-11-14)
+
+  include/armpi_common/json.hpp                <- ros2_ws/src/armpi_common/include/armpi_common/json.hpp
+  src/json.cpp                                 <- ros2_ws/src/armpi_common/src/json.cpp
+  include/armpi_protocol/protocol.hpp          <- ros2_ws/src/armpi_protocol/include/armpi_protocol/protocol.hpp
+  include/armpi_protocol/client.hpp            <- ros2_ws/src/armpi_protocol/include/armpi_protocol/client.hpp
+  include/armpi_protocol/client_codec.hpp      <- ros2_ws/src/armpi_protocol/include/armpi_protocol/client_codec.hpp
+  include/armpi_protocol/datagram_link.hpp     <- ros2_ws/src/armpi_protocol/include/armpi_protocol/datagram_link.hpp
+  src/protocol.cpp                             <- ros2_ws/src/armpi_protocol/src/protocol.cpp
+  src/client.cpp                               <- ros2_ws/src/armpi_protocol/src/client.cpp
+  src/client_codec.cpp                         <- ros2_ws/src/armpi_protocol/src/client_codec.cpp
+  include/armpi_kinematics/arm_kinematics.hpp  <- ros2_ws/src/armpi_kinematics/include/armpi_kinematics/arm_kinematics.hpp
+  include/armpi_kinematics/reachability.hpp    <- ros2_ws/src/armpi_kinematics/include/armpi_kinematics/reachability.hpp
+  src/arm_kinematics.cpp                       <- ros2_ws/src/armpi_kinematics/src/arm_kinematics.cpp
+  src/reachability.cpp                         <- ros2_ws/src/armpi_kinematics/src/reachability.cpp
+
+The UdpLink class declared in datagram_link.hpp is not compiled here; this project provides its own
+DatagramLink implementation (src/net/udp_link.*) on a Winsock/POSIX socket layer.
+
+A copy of the Apache License 2.0 is available at https://www.apache.org/licenses/LICENSE-2.0

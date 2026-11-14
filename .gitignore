@@ -1,0 +1,13 @@
+build*/
+work/
+secrets/
+*.log
+settings.json
+compile_commands.json
+.DS_Store
+._*
+res/app_256.png
+.cache/
+# internal working documents (contain personal setup details)
+docs/PLAN_v*.md
+docs/SECURITY_REVIEW_v*.md
