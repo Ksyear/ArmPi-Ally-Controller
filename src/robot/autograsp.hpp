@@ -1,4 +1,5 @@
-// Autograsp (docs/ARCHITECTURE.md, docs/SAFETY_KO.md rules 12-21): pick a detected object and lift it, arm only.
+// Autograsp (docs/ARCHITECTURE.md, docs/SAFETY_KO.md rules 14-24): pick a detected object and lift it; the base
+// only moves in the experimental base approach (off by default).
 //
 // GraspPlanner turns one detection into arm poses (observe / hover / grasp / lift).
 // GraspSequencer walks the steps. It only moves while the dead-man (A or the on-screen hold button) is held:
