@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(armpi_ally_controller VERSION 0.2.0 LANGUAGES CXX)
+project(armpi_ally_controller VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,6 +37,12 @@ add_library(ally_core STATIC
   src/robot/camera.cpp
   src/robot/image.cpp
   src/robot/core.cpp
+  src/robot/autograsp.cpp
+  src/vision/image_ops.cpp
+  src/vision/homography.cpp
+  src/vision/detector.cpp
+  src/vision/calibration.cpp
+  src/vision/vision_worker.cpp
   src/input/pad.cpp
   src/input/mapper.cpp)
 target_include_directories(ally_core PUBLIC src)
@@ -78,7 +84,7 @@ if(WIN32 AND EXISTS ${CMAKE_SOURCE_DIR}/src/app/gui_main.cpp)
   target_compile_definitions(imgui PUBLIC UNICODE _UNICODE IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
   # Embedded fonts (absolute paths so windres finds them from the build directory)
   configure_file(res/fonts.rc.in ${CMAKE_BINARY_DIR}/fonts.rc @ONLY)
-  add_executable(armpi-ally WIN32 src/app/gui_main.cpp src/app/gui_app.cpp src/app/ui_theme.cpp src/app/ui_widgets.cpp
+  add_executable(armpi-ally WIN32 src/app/gui_main.cpp src/app/gui_app.cpp src/app/grasp_tab.cpp src/app/ui_theme.cpp src/app/ui_widgets.cpp
                                   res/app.rc ${CMAKE_BINARY_DIR}/fonts.rc)
   target_link_libraries(armpi-ally PRIVATE ally_core imgui d3d11 dxgi d3dcompiler dwmapi winmm shell32
                                            ${ALLY_STATIC_LINK})
@@ -90,4 +96,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/test/unit_tests.cpp)
   add_executable(ally_unit_tests test/unit_tests.cpp)
   target_link_libraries(ally_unit_tests PRIVATE ally_core ${ALLY_STATIC_LINK})
   add_test(NAME unit COMMAND ally_unit_tests)
+endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/test/vision_tests.cpp)
+  add_executable(ally_vision_tests test/vision_tests.cpp)
+  target_link_libraries(ally_vision_tests PRIVATE ally_core ${ALLY_STATIC_LINK})
+  add_test(NAME vision COMMAND ally_vision_tests)
 endif()

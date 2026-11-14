@@ -39,3 +39,5 @@ jobs:
           git -C /tmp/armpro fetch -q --depth 1 https://github.com/Ksyear/ArmPro_Cpp_ROS2 4ab02adc9cc35542f6b8532dd98c85d92129b36c
           git -C /tmp/armpro checkout -q FETCH_HEAD
           test/e2e_mock.sh /tmp/armpro build-mac
+      - name: autograsp end-to-end (mock robot + synthetic camera)
+        run: test/e2e_grasp_mock.sh /tmp/armpro build-mac

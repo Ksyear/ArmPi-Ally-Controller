@@ -46,6 +46,10 @@ bool hold_ring_button(const char* id, const char* label, ImVec2 size, double hol
 int segmented(const char* id, const char* const* items, const char* const* icons, int n, int current, ImVec2 item,
               bool vertical);
 
+// Progress through fixed steps (no input). current = index of the running step (n = all done, -1 = none);
+// failed = index of the step that failed (-1 = none). Done steps get an ok dot, the current one an accent bar.
+void stepper(const char* id, const char* const* labels, int n, int current, int failed, ImVec2 size);
+
 // ── containers / values ──
 bool begin_card(const char* id, const char* title, ImVec2 size, bool scroll = false);
 void end_card();

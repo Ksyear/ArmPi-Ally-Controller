@@ -83,7 +83,9 @@ std::string settings_to_json(const Settings& s) {
     << "  \"camera_on\": " << json::boolean(s.camera_on) << ",\n"
     << "  \"allow_drive_while_arm\": " << json::boolean(s.allow_drive_while_arm) << ",\n"
     << "  \"show_crosshair\": " << json::boolean(s.show_crosshair) << ",\n"
-    << "  \"font_scale\": " << json::number(s.font_scale) << "\n"
+    << "  \"font_scale\": " << json::number(s.font_scale) << ",\n"
+    << "  \"autograsp_confirm\": " << json::boolean(s.autograsp_confirm) << ",\n"
+    << "  \"autograsp_retry\": " << s.autograsp_retry << "\n"
     << "}\n";
   return o.str();
 }
@@ -134,6 +136,8 @@ bool settings_from_json(const std::string& text, Settings* s, std::string* err) 
   bln("allow_drive_while_arm", &s->allow_drive_while_arm);
   bln("show_crosshair", &s->show_crosshair);
   flt("font_scale", &s->font_scale, 1.0, 1.3);
+  bln("autograsp_confirm", &s->autograsp_confirm);
+  i32("autograsp_retry", &s->autograsp_retry, 0, 2);
   return true;
 }
 
@@ -151,36 +155,50 @@ void prune_logs(const std::string& dir_utf8, size_t keep) {
   for (size_t i = 0; i + keep < logs.size(); ++i) fs::remove(logs[i], ec);
 }
 
-bool load_settings(const std::string& path, Settings* s, std::string* err) {
+bool read_text_file(const std::string& path, std::string* out, std::string* err) {
   std::ifstream f(to_path(path), std::ios::binary);
   if (!f) {
-    if (err) *err = "설정 파일 없음(기본값 사용)";
+    if (err) *err = "파일 없음";
     return false;
   }
   std::ostringstream ss;
   ss << f.rdbuf();
-  return settings_from_json(ss.str(), s, err);
+  *out = ss.str();
+  return true;
 }
 
-bool save_settings(const std::string& path, const Settings& s, std::string* err) {
+bool write_text_file_atomic(const std::string& path, const std::string& text, std::string* err) {
   const fs::path p = to_path(path);
   fs::path tmp = p;
   tmp += ".tmp";
   {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
     if (!f) {
-      if (err) *err = "설정 저장 실패";
+      if (err) *err = "저장 실패";
       return false;
     }
-    f << settings_to_json(s);
+    f << text;
   }
   std::error_code ec;
   fs::rename(tmp, p, ec);
   if (ec) {
-    if (err) *err = "설정 저장 실패: " + ec.message();
+    if (err) *err = "저장 실패: " + ec.message();
     return false;
   }
   return true;
+}
+
+bool load_settings(const std::string& path, Settings* s, std::string* err) {
+  std::string text;
+  if (!read_text_file(path, &text, err)) {
+    if (err) *err = "설정 파일 없음(기본값 사용)";
+    return false;
+  }
+  return settings_from_json(text, s, err);
+}
+
+bool save_settings(const std::string& path, const Settings& s, std::string* err) {
+  return write_text_file_atomic(path, settings_to_json(s), err);
 }
 
 }  // namespace ally

@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 
+#include "armpi_kinematics/reachability.hpp"
 #include "armpi_protocol/client.hpp"
 #include "common/util.hpp"
 #include "net/comm_log.hpp"
@@ -49,6 +50,10 @@ struct ControlInput {
   bool precision{false};                  // fine mode
 };
 
+// How the most recent absolute goal (arm_goto / set_gripper) ended.
+enum class GoalResult { kNone, kReached, kStalled, kCancelled };
+const char* to_string(GoalResult r);
+
 // Monotonic event counters. The UI turns increments into rumble / sounds / flashes.
 struct Cues {
   uint64_t estop{0}, limit{0}, link_lost{0}, link_ok{0}, arm_on{0}, rejected{0}, service_ok{0}, service_fail{0};
@@ -72,10 +77,16 @@ struct CoreSnapshot {
   bool limit_active{false};  // target was clamped/adjusted in the last 0.5 s
   bool arm_latched{false};   // arm enabled by a toggle (not a held dead-man)
   bool goal_active{false};   // ramping toward an absolute target
+  GoalResult goal_result{GoalResult::kNone};
+  uint64_t goal_id{0};       // id returned by the arm_goto / set_gripper that started the current/last goal
+  double goal_remaining_m{-1.0};
   Cues cues;
   double loop_hz{0.0};
   uint64_t loop_overruns{0};
 };
+
+// The app's geometric reach model (link lengths + workspace box), shared by the reach filter and autograsp.
+std::shared_ptr<armpi_kinematics::TargetProjector> make_reach_projector();
 
 class RobotCore {
  public:
@@ -99,12 +110,15 @@ class RobotCore {
   void set_arm_enabled(bool on, bool latched = false);
   bool arm_enabled() const;
   // Absolute targets never jump: the loop ramps toward them at the arm rate limits.
-  void arm_goto(const ArmTarget& t);
+  // rate_scale (0.2..1.0) slows the ramp (e.g. slow descents). Returns the goal id seen in the snapshot.
+  uint64_t arm_goto(const ArmTarget& t, double rate_scale = 1.0);
   void arm_goto_partial(std::optional<double> x, std::optional<double> y, std::optional<double> z,
                         std::optional<double> pitch);
   void arm_nudge(double dx, double dy, double dz, double dpitch);
-  void set_gripper(double g);
+  uint64_t set_gripper(double g);
   void cancel_goal();
+  // Target is inside the workspace box and has an IK solution (same projector the reach filter uses).
+  bool reachable(const ArmTarget& t) const;
   void arm_sync();
 
   void estop();        // UDP emergency_stop, retried until ACK (latches the whole robot)
@@ -150,6 +164,13 @@ class RobotCore {
   std::optional<double> goal_grip_;
   double goal_stall_since_{-1.0};
   double goal_best_{0.0};
+  uint64_t goal_id_{0};
+  GoalResult goal_result_{GoalResult::kNone};
+  double goal_rate_scale_{1.0};
+  double goal_remaining_{-1.0};
+  std::shared_ptr<armpi_kinematics::TargetProjector> proj_;
+  uint64_t new_goal_locked(double rate_scale);
+  void cancel_goal_locked();
   bool released_{false};
   double speed_{0.4};
   double home_due_{-1.0};

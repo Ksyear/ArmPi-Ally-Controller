@@ -388,13 +388,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
   // Options (all optional, for tests and documentation screenshots):
   //   --smoke-test [--frames N]  draw N frames (default 180) and exit, never block on dialogs
   //   --screenshot FILE.bmp      save the last frame (implies --smoke-test)
-  //   --demo-connect HOST --demo-ports BASE [--tab drive|arm|diag|settings]  connect for this run only
-  //   --demo-state estop|cambig  screenshot-only display states (e-stop latched on the mock robot / full camera)
+  //   --demo-connect HOST --demo-ports BASE [--tab drive|arm|grasp|diag|settings]  connect for this run only
+  //   --demo-state estop|cambig|grasp  screenshot-only display states (e-stop latched on the mock robot / full camera /
+  //                              first detected object selected; nothing moves)
+  //   --demo-calib FILE          camera calibration for this run only (never saved)
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   int smoke_frames = 180, demo_base = 0;
   std::wstring shot;
-  std::string demo_host, demo_tab, demo_state;
+  std::string demo_host, demo_tab, demo_state, demo_calib;
   for (int i = 1; argv && i < argc; ++i) {
     const std::wstring a = argv[i];
     auto next = [&]() { return i + 1 < argc ? std::wstring(argv[++i]) : std::wstring(); };
@@ -405,6 +407,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
     else if (a == L"--demo-ports") demo_base = _wtoi(next().c_str());
     else if (a == L"--tab") demo_tab = to_utf8(next());
     else if (a == L"--demo-state") demo_state = to_utf8(next());
+    else if (a == L"--demo-calib") demo_calib = to_utf8(next());
   }
   if (argv) LocalFree(argv);
   {
@@ -483,6 +486,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
     ally::ui::GuiApp app(plat, settings, fonts);
     if (!demo_host.empty()) app.set_demo_connect(demo_host, demo_base, demo_tab);
     if (!demo_state.empty()) app.set_demo_state(demo_state);
+    if (!demo_calib.empty()) app.set_demo_calib(demo_calib);
     boot_log("ui ready");
     int frames = 0;
     const double smoke_start = ally::mono_now();

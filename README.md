@@ -12,7 +12,11 @@
 | **비상정지 상태**: 버튼·상단·HUD만 빨강 | **영상 크게(Y)**: 안전 열은 그대로 |
 | ![비상정지](docs/images/estop.png) | ![영상 크게](docs/images/cambig.png) |
 
-> 위 화면은 Ally X에서 앱이 직접 저장한 것이다(`--screenshot`). 로봇 대신 가짜 로봇에 연결된 상태다(주소는 '데모 로봇'으로 가림). 실제 로봇 시연 GIF는 실기 시험 뒤 추가한다.
+**집기 탭(0.3.0)**: 카메라가 색 블록·공을 찾고, 고른 물체(파란 테두리)를 A를 누르고 있는 동안 팔이 스스로 집어 든다. 초록 선은 팔이 닿는 책상 범위다(가짜 카메라 영상).
+
+![집기 탭](docs/images/grasp.png)
+
+> 위 화면은 Ally X에서 앱이 직접 저장한 것이다(`--screenshot`). 로봇 대신 가짜 로봇에 연결된 상태다(주소는 '데모 로봇'으로 가림). 집기 탭 영상은 시험용 합성 카메라(`tools/fake_cam_server.py`)다. 실제 로봇 시연 GIF는 실기 시험 뒤 추가한다.
 
 ### 디자인
 
@@ -38,13 +42,15 @@
 | 로봇 서비스 | 기본 자세, 로봇 전체 정지·해제(길게 + 확인) |
 | 관절 직접 조종 | 진단 탭 슬라이더 6개(세션을 놓았을 때만) |
 | 카메라(MJPEG) | 영상 + HUD(상태, 팔 목표, 주행 벡터, 알림) |
+| **물체 인식·자동 집기** | 집기 탭: 영상에서 색 블록·공을 찾아 목록과 영상에 표시 → 영상을 누르거나 D-pad로 고름 → **A를 누르고 있는 동안** 팔이 관측·계획·열기·위로·하강·닫기·들기·확인을 스스로 한다. 놓으면 그 자리에 선다. 카메라 보정 마법사 포함 |
 | 세션 관리 | 연결·끊기·세션 놓기(다른 조종기에 양보)·새 세션 |
 
 ## Ally 특성 활용
 
 - **아날로그 비례 조종**: 스틱 원형 데드존 + `|v|^1.6` 곡선으로 저속 미세 조작.
 - **진동 피드백**: 비상정지(강하게), 통신 끊김(두 번), 팔이 닿는 범위의 끝(짧게), 로봇 거부, 서비스 성공·실패를 패턴으로 구분.
-- **터치**: 큰 버튼, 가상 스틱, 팔 그림에 직접 목표 찍기, IP 입력용 숫자판.
+- **터치**: 큰 버튼, 가상 스틱, 팔 그림에 직접 목표 찍기, 영상에서 집을 물체 누르기, IP 입력용 숫자판.
+- **A 버튼 = 자동 동작 데드맨**: 자동 집기는 A를 누르고 있는 동안만 움직인다. 손을 떼면 바로 선다.
 - **화면 꺼짐 방지**: 연결된 동안 잠자기를 막는다(꺼지면 포커스를 잃고 로봇이 멈춘다).
 - **배터리**: 로봇 배터리와 Ally 배터리를 함께 표시.
 - **120 Hz 화면**: 플립 모델 스왑체인 + vsync. 배터리를 아끼려면 60·30 fps로 제한.
@@ -55,7 +61,8 @@
 
 ```
 src/net     Winsock/POSIX 소켓 계층, UDP 링크, 검색, HTTP·MJPEG, WebSocket
-src/robot   RobotCore(20 Hz 조종 루프·팔 램프·보정), RosBridge, CameraFeed
+src/robot   RobotCore(20 Hz 조종 루프·팔 램프·보정), RosBridge, CameraFeed, 자동 집기(계획·순서)
+src/vision  색·모양 물체 검출, 책상 평면 호모그래피, 카메라 보정 파일, 검출 스레드(외부 라이브러리 없음)
 src/input   XInput 게임패드·진동 패턴, Mapper(패드+키+터치 → 조종 입력, 순수 로직)
 src/app     armpi-ally.exe(Win32 + D3D11 + Dear ImGui), armpi-ally-cli(검색·자체 시험·패드 확인)
 third_party Protocol v3 클라이언트·JSON·기구학(로봇 저장소 발췌), Dear ImGui, stb_image
@@ -85,19 +92,24 @@ scripts/build_mac.sh
 
 ```bash
 build-mac/ally_unit_tests                         # 단위 시험 65개 항목(보안 한계 포함)
+build-mac/ally_vision_tests                       # 인식·보정·집기 순서 단위 시험 118개 항목(가짜 로봇)
 test/e2e_mock.sh /path/to/ArmPro_Cpp_ROS2         # 가짜 로봇 종단 시험 21개 항목
+test/e2e_grasp_mock.sh /path/to/ArmPro_Cpp_ROS2   # 가짜 로봇 + 합성 카메라로 자동 집기 종단 시험 18개 항목
 armpi-ally-cli.exe selftest --robot <로봇 IP>     # Windows에서 같은 종단 시험
 armpi-ally-cli.exe pads --rumble 300              # 내장 게임패드·진동 확인
 armpi-ally.exe --smoke-test --screenshot shot.bmp # 화면 앱 시작·렌더링 점검(시작 기록: %LOCALAPPDATA%\ArmPi_Ally_Controller\boot.log)
-#   --demo-connect HOST --demo-ports BASE --tab drive|arm|diag|settings --demo-state estop|cambig  (문서용 화면)
+#   --demo-connect HOST --demo-ports BASE --tab drive|arm|grasp|diag|settings --demo-state estop|cambig|grasp
+#   --demo-calib vision_calib.json  (문서용 화면. 데모 실행은 설정·보정 파일을 저장하지 않는다)
 ```
 
 | 확인한 것 | 결과 |
 |---|---|
 | 단위 시험(맥, Windows 빌드) | 65/65 통과 |
+| 인식·보정·집기 순서 단위 시험(맥) | 118/118 통과: HSV·블롭·모양 구분, 추적 ID, 호모그래피 복원·잡음·퇴화, 보정 파일 범위 검사, 계획(바닥 금지선·도달 불가), 전체 순서, A 놓음·비상정지·연결 끊김·사용자 개입·확인 시간 초과·하강 정지 재시도·확인 실패 |
+| 자동 집기 종단 시험(맥, 가짜 로봇 + 합성 카메라) | 18/18 통과: 인식(처리 약 6 ms) → 계획 오차 0 mm → 집어 들기 → 영상 확인, A를 놓으면 일시정지·팔 목표 고정, 다시 누르면 같은 단계, 비상정지면 중단 |
 | 가짜 로봇 종단 시험(맥) | 21/21 통과: 검색, 차체, 팔 램프(한 틱 최대 7.5 mm), 범위 밖 목표 정지, 비상정지·해제, 상태·서비스, 카메라, 관절 직접 조종, 새 세션 |
 | Windows 콘솔 exe를 Ally에서 실행, 망 너머 가짜 로봇 | 자체 시험 통과(ACK 중앙값 약 31 ms, 조종 루프 20.1 Hz), 내장 패드 XInput 슬롯 0 인식 |
-| 화면 exe(armpi-ally.exe)를 Ally 데스크톱에서 실행 | D3D11 하드웨어(플립 모델), 맑은 고딕, 1080p 렌더링, 가짜 로봇 자동 연결·영상, 화면 저장, 정상 종료 확인(`--smoke-test`) |
+| 화면 exe(armpi-ally.exe)를 Ally 데스크톱에서 실행 | D3D11 하드웨어(플립 모델), 맑은 고딕, 1080p 렌더링, 가짜 로봇 자동 연결·영상, 화면 저장, 정상 종료 확인(`--smoke-test`). 집기 탭: 합성 카메라 영상에서 후보 2개 인식·도달 범위·선택 표시 확인 |
 | 손으로 하는 조작(패드·터치·진동) | 사용자 확인 필요 |
 | 실제 로봇 | 아직 |
 
@@ -113,6 +125,8 @@ armpi-ally.exe --smoke-test --screenshot shot.bmp # 화면 앱 시작·렌더링
 - 터치는 한 점만 처리한다(두 손가락 동시 조작은 다음 단계).
 - 기울기(자이로) 조종은 넣지 않았다. Ally 센서가 Windows 센서 API로 보이는지 확인한 뒤 결정한다.
 - 앱 쪽 팔 보정은 링크 길이만 쓴다(관절 범위는 로봇마다 달라 로봇의 보정을 최종으로 따른다).
+- 자동 집기는 **실제 로봇·카메라에서 아직 시험하지 않았다.** 위치는 명령값 기준이라 실제 손끝 오차(링크 길이·서보)를 모른다. 첫 실기 절차는 [`docs/SAFETY_KO.md`](docs/SAFETY_KO.md)에 있다.
+- 인식은 단색 블록·공(색 + 모양)만 한다. 무늬가 있거나 색이 비슷한 물체, 강한 그림자에는 약하다. 차체가 스스로 물체에 다가가는 기능은 아직 없다(팔이 닿는 범위 안에 사람이 차체를 옮긴다).
 
 ## 라이선스
 

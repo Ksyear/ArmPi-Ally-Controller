@@ -498,4 +498,46 @@ void toast_stack(ImDrawList* dl, ImVec2 top_center, float max_w, const std::vect
   }
 }
 
+
+// ───────── stepper ─────────
+
+void stepper(const char* id, const char* const* labels, int n, int current, int failed, ImVec2 size) {
+  if (n <= 0) return;
+  ImGui::PushID(id);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 p0 = ImGui::GetCursorScreenPos();
+  ImGui::Dummy(size);
+  const float cw = size.x / static_cast<float>(n);
+  const float bar_y = p0.y + size.y - S(4);
+  dl->AddRectFilled(ImVec2(p0.x, bar_y), ImVec2(p0.x + size.x, bar_y + S(2)), col::border1, S(1));
+  // the accent bar glides to the current step
+  const float pos = tween(ImGui::GetID("pos"), static_cast<float>(std::clamp(current, 0, n - 1)), tm::base);
+  for (int i = 0; i < n; ++i) {
+    const float x0 = p0.x + cw * i;
+    const bool done = current >= 0 && i < current && i != failed;
+    const bool cur = i == current && i != failed;
+    const bool bad = i == failed;
+    ImU32 ink = col::text3;
+    if (done) ink = col::text2;
+    if (cur) ink = col::text1;
+    if (bad) ink = col::danger;
+    const ImVec2 ls = text_size(cur ? strong_font() : ctx().fonts.regular, fs::micro, labels[i]);
+    const float mark = S(10);
+    const float tx = x0 + (cw - ls.x - ((done || bad) ? mark + S(sp::s1) : 0.0f)) * 0.5f;
+    float x = tx;
+    if (done || bad) {
+      status_symbol(dl, ImVec2(x + mark * 0.5f, p0.y + (size.y - S(6)) * 0.5f), S(4), bad ? Status::kDanger : Status::kOk);
+      x += mark + S(sp::s1);
+    }
+    text(dl, ImVec2(x, p0.y + (size.y - S(6) - ls.y) * 0.5f), cur ? strong_font() : ctx().fonts.regular, fs::micro, ink, labels[i]);
+    if (bad) dl->AddRectFilled(ImVec2(x0 + S(6), bar_y - S(1)), ImVec2(x0 + cw - S(6), bar_y + S(3)), col::danger, S(2));
+    if (done) dl->AddRectFilled(ImVec2(x0 + S(6), bar_y), ImVec2(x0 + cw - S(6), bar_y + S(2)), col::alpha(col::ok, 0.6f), S(1));
+  }
+  if (current >= 0 && current < n && current != failed) {
+    const float x0 = p0.x + cw * pos;
+    dl->AddRectFilled(ImVec2(x0 + S(6), bar_y - S(1)), ImVec2(x0 + cw - S(6), bar_y + S(3)), col::accent, S(2));
+  }
+  ImGui::PopID();
+}
+
 }  // namespace ally::ui::w

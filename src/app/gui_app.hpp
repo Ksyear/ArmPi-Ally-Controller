@@ -20,7 +20,10 @@
 #include "input/pad.hpp"
 #include "net/comm_log.hpp"
 #include "net/discovery.hpp"
+#include "robot/autograsp.hpp"
 #include "robot/core.hpp"
+#include "vision/calibration.hpp"
+#include "vision/vision_worker.hpp"
 
 namespace ally::ui {
 
@@ -48,13 +51,15 @@ class GuiApp {
   void set_demo_connect(const std::string& host, int port_base, const std::string& tab);
   // Screenshot-only display states: "estop" (latch an e-stop on the mock robot), "cambig" (full camera).
   void set_demo_state(const std::string& state) { demo_state_ = state; }
+  // Test/demo run: use this camera calibration for the run only (never saved).
+  void set_demo_calib(const std::string& path);
   void frame(double now);
   void shutdown();  // neutral + disconnect, rumble off, save settings
   const Settings& settings() const { return settings_; }
   EventLog& log() { return log_; }
 
  private:
-  enum class Tab { kDrive, kArm, kDiag, kSettings };
+  enum class Tab { kDrive, kArm, kGrasp, kDiag, kSettings };
 
   void connect(const std::string& host);
   void disconnect();
@@ -75,6 +80,17 @@ class GuiApp {
   void draw_tab_arm(ImVec2 size);
   void draw_tab_diag(ImVec2 size);
   void draw_tab_settings(ImVec2 size);
+  // autograsp (grasp_tab.cpp)
+  void draw_tab_grasp(ImVec2 size);
+  void draw_grasp_candidates(float wdt);
+  void draw_grasp_calibration(float wdt);
+  void draw_grasp_overlay(ImDrawList* dl, ImVec2 p0, ImVec2 p1);  // camera HUD, image rectangle p0..p1
+  void grasp_frame(double now);                // dead-man + sequencer tick + cues, every frame
+  void grasp_pad(uint16_t pressed);            // D-pad edges in the grasp tab
+  void grasp_pick(float u, float v, double now);  // camera tap, image pixels
+  void set_calib(const vision::VisionCalib& c, bool save_file);
+  void start_grasp();
+  void stop_grasp();
   void draw_connect_left(ImVec2 p0, ImVec2 size);
   void draw_connect_right(ImVec2 p0, ImVec2 size);
   void arm_plot(const char* id, ImVec2 size, bool top_view);
@@ -125,6 +141,24 @@ class GuiApp {
   float num_grip_{0.0f};
   float joints_deg_[6]{0, 0, 0, 0, 0, 0};
   bool confirm_reset_{false};
+
+  // autograsp: detector thread, camera calibration, sequencer (exists while connected)
+  vision::VisionWorker vision_;
+  vision::VisionCalib calib_;
+  std::unique_ptr<robot::CoreGraspRobot> grasp_robot_;
+  std::unique_ptr<robot::GraspSequencer> grasp_;
+  std::vector<std::pair<float, float>> reach_band_;
+  bool reach_band_dirty_{true};
+  bool grasp_hold_touch_{false};  // on-screen hold button, read next frame
+  uint64_t grasp_done_seen_{0}, grasp_fail_seen_{0};
+  uint16_t prev_buttons_{0};
+  bool demo_calib_{false};
+  std::string grasp_hint_;
+  bool calib_mode_{false};
+  int calib_step_{0};
+  vision::VisionCalib calib_edit_;
+  bool calib_tap_set_{false};
+  float calib_tap_u_{0}, calib_tap_v_{0};
 
   std::string demo_host_;
   int demo_base_{0};

@@ -88,6 +88,22 @@ GuiApp::GuiApp(Platform p, Settings s, Fonts fonts) : plat_(std::move(p)), setti
   prune_logs(settings_dir(), 20);
   if (log_.open_file(settings_dir() + "/ally_" + wall_stamp() + ".log", &err)) log_.info("기록 파일: " + settings_dir());
   if (!fonts.embedded) log_.warn("내장 글꼴을 읽지 못해 시스템 글꼴(맑은 고딕)을 씀");
+  // autograsp: optional colour dictionary and camera calibration from the settings folder
+  std::string text;
+  std::string cerr;
+  if (read_text_file(settings_dir() + "/vision_colors.json", &text, &cerr)) {
+    std::vector<vision::ObjectClass> cls;
+    if (vision::classes_from_json(text, &cls, &cerr)) {
+      vision_.detector().set_classes(std::move(cls));
+      log_.info("물체 색 사전: vision_colors.json");
+    } else {
+      log_.warn(cerr);
+    }
+  }
+  vision::VisionCalib calib;
+  if (vision::load_calib(vision::calib_path(), &calib, &cerr)) calib_ = calib;
+  vision_.set_max_hz(10.0);
+  vision_.start();
 }
 
 GuiApp::~GuiApp() { shutdown(); }
@@ -95,6 +111,7 @@ GuiApp::~GuiApp() { shutdown(); }
 void GuiApp::shutdown() {
   if (discover_thread_.joinable()) discover_thread_.join();
   disconnect();
+  vision_.stop();
   pad_.set_rumble(0, 0);
   if (plat_.keep_awake && keep_awake_on_) plat_.keep_awake(false);
   keep_awake_on_ = false;
@@ -106,6 +123,7 @@ void GuiApp::set_demo_connect(const std::string& host, int port_base, const std:
   demo_base_ = port_base;
   demo_pending_ = !host.empty();
   if (tab == "arm") tab_ = Tab::kArm;
+  else if (tab == "grasp") tab_ = Tab::kGrasp;
   else if (tab == "diag") tab_ = Tab::kDiag;
   else if (tab == "settings") tab_ = Tab::kSettings;
 }
@@ -184,6 +202,7 @@ void GuiApp::connect(const std::string& host_in) {
     return;
   }
   core_ = std::move(core);
+  start_grasp();
   cues_init_ = false;
   cam_seq_ = 0;
   settings_.robot_host = host;
@@ -194,6 +213,7 @@ void GuiApp::connect(const std::string& host_in) {
 
 void GuiApp::disconnect() {
   if (!core_) return;
+  stop_grasp();  // holds a reference to core_
   core_->stop();
   core_.reset();
   cam_tex_ = ImTextureID{};
@@ -263,6 +283,7 @@ void GuiApp::handle_input(double now) {
     if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) tab_ = Tab::kArm;
     if (ImGui::IsKeyPressed(ImGuiKey_F3, false)) tab_ = Tab::kDiag;
     if (ImGui::IsKeyPressed(ImGuiKey_F4, false)) tab_ = Tab::kSettings;
+    if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) tab_ = Tab::kGrasp;
     if (ImGui::IsKeyPressed(ImGuiKey_F11, false) && plat_.set_fullscreen) {
       settings_.fullscreen = !settings_.fullscreen;
       plat_.set_fullscreen(settings_.fullscreen);
@@ -274,6 +295,11 @@ void GuiApp::handle_input(double now) {
   }
 
   const auto r = mapper_.map(pad, k, touch_, now, focused_);
+  const uint16_t pressed = static_cast<uint16_t>(pad.buttons & ~prev_buttons_);
+  prev_buttons_ = pad.buttons;
+  // Grasp tab: the D-pad picks candidates / fine-tunes the grasp point instead of speed and arm steps.
+  const bool grasp_tab = tab_ == Tab::kGrasp && !show_connect_;
+  if (grasp_tab && focused_) grasp_pad(pressed);
   clear_progress_pad_ = r.ev.clear_progress;
   if (r.ev.estop) trigger_estop(now);
   if (!core_) {
@@ -285,9 +311,10 @@ void GuiApp::handle_input(double now) {
     core_->clear_estop();
     notify("비상정지 해제 요청 — 스틱을 놓았다가 다시", Status::kWarn);
   }
-  if (r.ev.speed_delta != 0) core_->set_speed(core_->speed() + 0.1 * r.ev.speed_delta);
+  const int speed_delta = grasp_tab ? 0 : r.ev.speed_delta;
+  if (speed_delta != 0) core_->set_speed(core_->speed() + 0.1 * speed_delta);
   if (r.ev.speed_set_percent > 0) core_->set_speed(r.ev.speed_set_percent / 100.0);
-  if (r.ev.speed_delta != 0 || r.ev.speed_set_percent > 0) {
+  if (speed_delta != 0 || r.ev.speed_set_percent > 0) {
     settings_.speed = core_->speed();
     notify(strf("속도 상한 %.0f %%", settings_.speed * 100), Status::kIdle, 1.2);
   }
@@ -298,7 +325,7 @@ void GuiApp::handle_input(double now) {
     notify("팔 목표를 로봇 현재 자세로 맞춤", Status::kIdle);
   }
   if (r.ev.menu) tab_ = tab_ == Tab::kSettings ? Tab::kDrive : Tab::kSettings;
-  if (r.ev.z_step != 0 || r.ev.pitch_step != 0) core_->arm_nudge(0, 0, r.ev.z_step, r.ev.pitch_step);
+  if (!grasp_tab && (r.ev.z_step != 0 || r.ev.pitch_step != 0)) core_->arm_nudge(0, 0, r.ev.z_step, r.ev.pitch_step);
 
   // Arm dead-man: LB / Shift held. A touch toggle (latched) keeps the arm on after release.
   const auto snap = core_->snapshot();
@@ -375,6 +402,8 @@ void GuiApp::frame(double now) {
   }
   handle_input(now);
   handle_cues(now);
+  grasp_frame(now);
+  grasp_hold_touch_ = false;  // the hold button sets it again while drawn and held
 
   float lo = 0, hi = 0;
   haptics_.set_enabled(settings_.haptics);
@@ -403,6 +432,7 @@ void GuiApp::frame(double now) {
       cam_h_ = f->height;
       cam_seq_ = f->seq;
       cam_last_frame_ = now;
+      vision_.submit(f);  // shared frame, no copy; ignored unless the grasp tab is open
     }
   }
   toasts_.erase(std::remove_if(toasts_.begin(), toasts_.end(), [&](const w::Toast& t) { return t.until < now; }), toasts_.end());
@@ -505,10 +535,10 @@ void GuiApp::draw_top_bar(ImVec2 p0, ImVec2 size) {
                    last_pad_.connected ? Status::kOk : (pad_.available() ? Status::kDanger : Status::kOff)});
 
   // mode segment (right edge)
-  const char* tabs[] = {"주행", "팔", "진단", "설정"};
-  const char* tab_icons[] = {icon::kGauge, icon::kBot, icon::kActivity, icon::kSettings};
-  const ImVec2 seg_item(S(112), S(40));
-  const float seg_x = p0.x + size.x - S(sp::gutter) - seg_item.x * 4;
+  const char* tabs[] = {"주행", "팔", "집기", "진단", "설정"};
+  const char* tab_icons[] = {icon::kGauge, icon::kBot, icon::kBox, icon::kActivity, icon::kSettings};
+  const ImVec2 seg_item(S(100), S(40));
+  const float seg_x = p0.x + size.x - S(sp::gutter) - seg_item.x * 5;
   const float cy = p0.y + size.y * 0.5f;
 
   // left group
@@ -534,7 +564,7 @@ void GuiApp::draw_top_bar(ImVec2 p0, ImVec2 size) {
     rx -= S(sp::s5);
   }
   ImGui::SetCursorScreenPos(ImVec2(seg_x, cy - seg_item.y * 0.5f));
-  const int clicked = w::segmented("modes", tabs, tab_icons, 4, show_connect_ && core_ ? -1 : (core_ ? static_cast<int>(tab_) : -1), seg_item, false);
+  const int clicked = w::segmented("modes", tabs, tab_icons, 5, show_connect_ && core_ ? -1 : (core_ ? static_cast<int>(tab_) : -1), seg_item, false);
   if (clicked >= 0) {
     tab_ = static_cast<Tab>(clicked);
     if (core_) show_connect_ = false;
@@ -583,18 +613,25 @@ void GuiApp::draw_camera(ImVec2 o, ImVec2 size) {
     dl->AddLine(ImVec2(c.x, c.y + S(6)), ImVec2(c.x, c.y + S(18)), col::alpha(col::white, 0.55f), S(2));
   }
   const float m = S(sp::s6);
+  const bool grasp_view = core_ && grasp_ && tab_ == Tab::kGrasp && !show_connect_;
+  if (grasp_view && fresh) draw_grasp_overlay(dl, p0, p1);
   if (core_) {
     const auto snap = core_->snapshot();
-    // top-left: one state word
+    // top-left: one state word (e-stop first, then automation, then driving)
     const bool estop = snap.emergency;
     const bool driving = snap.base.server_state == "active" || snap.arm.server_state == "active";
-    const char* word = estop ? "비상정지" : driving ? "조종 중" : "중립";
+    const bool auto_grasp = grasp_ && grasp_->active();
+    const std::string word_s = estop        ? std::string("비상정지")
+                               : auto_grasp ? std::string("자동 집기 · ") + robot::to_string_ko(grasp_->status().state)
+                               : driving    ? std::string("조종 중")
+                                            : std::string("중립");
+    const char* word = word_s.c_str();
     if (estop) {
       const ImVec2 ws = w::text_size(F().bold, fs::title, word);
       dl->AddRectFilled(ImVec2(o.x + m - S(12), o.y + m - S(6)), ImVec2(o.x + m + ws.x + S(12), o.y + m + ws.y + S(6)), col::stop, S(sp::radiusS));
       w::text(dl, ImVec2(o.x + m, o.y + m), F().bold, fs::title, col::white, word);
     } else {
-      w::osd_text(dl, ImVec2(o.x + m, o.y + m), F().bold, fs::title, driving ? col::ok : col::text1, word);
+      w::osd_text(dl, ImVec2(o.x + m, o.y + m), F().bold, fs::title, auto_grasp ? col::accent : driving ? col::ok : col::text1, word);
     }
     // top-right: arm target while the arm is on
     if (snap.arm_enabled) {
@@ -622,6 +659,16 @@ void GuiApp::draw_camera(ImVec2 o, ImVec2 size) {
     const char* tag = snap.precision ? "속도 상한 · 저속" : "속도 상한";
     const ImVec2 ts = w::text_size(F().regular, fs::micro, tag);
     w::osd_text(dl, ImVec2(o1.x - m - ts.x, o1.y - m - ss.y - ts.y), F().regular, fs::micro, snap.precision ? col::warn : col::text2, tag);
+    // grasp tab: tap the image to pick an object (or a calibration point). Submitted before the icon
+    // buttons and marked overlappable so those buttons still win where they sit.
+    if (grasp_view && fresh) {
+      ImGui::SetCursorScreenPos(p0);
+      ImGui::SetNextItemAllowOverlap();
+      if (ImGui::InvisibleButton("cam_pick", ImVec2(iw, ih)) && cam_w_ > 0 && cam_h_ > 0) {
+        const ImVec2 mp = ImGui::GetIO().MousePos;
+        grasp_pick((mp.x - p0.x) / iw * static_cast<float>(cam_w_), (mp.y - p0.y) / ih * static_cast<float>(cam_h_), now);
+      }
+    }
     // icon buttons above the speed
     const ImVec2 ib(S(64), S(64));
     ImGui::SetCursorScreenPos(ImVec2(o1.x - m - ib.x * 2 - S(sp::s2), o1.y - m - ss.y - ts.y - S(sp::s3) - ib.y));
@@ -807,11 +854,12 @@ void GuiApp::draw_bottom_bar(ImVec2 p0, ImVec2 size) {
 // ───────────────────────── tab panel ─────────────────────────
 
 void GuiApp::draw_tab_panel(ImVec2 p0, ImVec2 size) {
-  const bool scroll = tab_ == Tab::kDiag || tab_ == Tab::kSettings;
+  const bool scroll = tab_ == Tab::kDiag || tab_ == Tab::kSettings || tab_ == Tab::kGrasp;
   if (begin_region("tab_panel", p0, size, scroll)) {
     switch (tab_) {
       case Tab::kDrive: draw_tab_drive(size); break;
       case Tab::kArm: draw_tab_arm(size); break;
+      case Tab::kGrasp: draw_tab_grasp(size); break;
       case Tab::kDiag: draw_tab_diag(size); break;
       case Tab::kSettings: draw_tab_settings(size); break;
     }
@@ -1255,7 +1303,7 @@ void GuiApp::draw_tab_settings(ImVec2 size) {
   ImGui::SameLine();
   if (w::button("quit", "앱 종료", ImVec2(S(180), S(64)), w::Variant::kDanger, icon::kPower) && plat_.quit) plat_.quit();
   ImGui::PushFont(F().regular, fs::micro);
-  ImGui::TextColored(col::v4(col::text3), "%s %s · Dear ImGui %s · 키보드 F1–F4 탭, F11 전체 화면", kAppName, kVersion, IMGUI_VERSION);
+  ImGui::TextColored(col::v4(col::text3), "%s %s · Dear ImGui %s · 키보드 F1–F5 탭, F11 전체 화면", kAppName, kVersion, IMGUI_VERSION);
   ImGui::TextColored(col::v4(col::text3), "글꼴: Pretendard, JetBrains Mono (OFL) · 아이콘: Lucide (ISC)");
   ImGui::PopFont();
 }

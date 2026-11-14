@@ -1,11 +1,13 @@
 // armpi_ally_cli: console companion of the GUI.
 //   discover            find robots on the local network (UDP 5002)
 //   selftest --robot IP run the whole non-GUI stack against a robot or the mock robot, print PASS/FAIL
+//   grasp-selftest      autograsp end to end: detect -> plan -> pick -> verify, then dead-man pause and e-stop abort
 //   pads                show XInput gamepad state (Windows), with --rumble to test vibration
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -13,9 +15,13 @@
 #include "common/util.hpp"
 #include "input/pad.hpp"
 #include "net/discovery.hpp"
+#include "net/http.hpp"
 #include "net/sock.hpp"
+#include "robot/autograsp.hpp"
 #include "robot/core.hpp"
 #include "version.hpp"
+#include "vision/calibration.hpp"
+#include "vision/vision_worker.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -47,6 +53,12 @@ struct Args {
   int rumble_ms{0};
   int seconds{5};
   int port{5001}, discovery_port{5002}, rosbridge_port{9090}, camera_port{8080};
+  std::string camera_url;   // overrides --camera-port
+  std::string calib;        // grasp-selftest: vision_calib.json
+  std::string grasp_class{"빨간 블록"};
+  int grasp_object{0};      // fake camera object index to hide after the lift
+  std::optional<std::pair<double, double>> expect_xy;
+  bool arm_moves_ok{false};  // grasp-selftest on a non-loopback robot: the arm moves without a dead-man
 };
 
 void usage() {
@@ -55,7 +67,10 @@ void usage() {
       "사용법:\n"
       "  armpi_ally_cli discover [--target IP]... [--timeout 초] [--discovery-port N]\n"
       "  armpi_ally_cli selftest --robot IP [--no-camera] [--no-rosbridge] [--no-drive]\n"
-      "                          [--port N] [--rosbridge-port N] [--camera-port N]\n"
+      "                          [--port N] [--rosbridge-port N] [--camera-port N | --camera-url URL]\n"
+      "  armpi_ally_cli grasp-selftest --robot IP --camera-url URL --calib vision_calib.json\n"
+      "                          [--class 이름] [--object N] [--expect-xy X,Y] [--port N] [--rosbridge-port N]\n"
+      "                          [--yes-arm-moves]  (127.0.0.1 이 아닌 로봇에서는 필수: 데드맨 없이 팔이 움직임)\n"
       "  armpi_ally_cli pads [--seconds N] [--rumble 밀리초]\n"
       "  armpi_ally_cli version\n",
       kVersion);
@@ -101,6 +116,7 @@ int cmd_selftest(const Args& a, EventLog& log) {
   opt.control_port = a.port;
   opt.rosbridge_port = a.rosbridge ? a.rosbridge_port : 0;
   opt.camera_port = a.camera_port;
+  opt.camera_url = a.camera_url;
   robot::RobotCore core(opt, log, comm);
   Check c;
   std::string err;
@@ -250,6 +266,204 @@ int cmd_selftest(const Args& a, EventLog& log) {
   return c.fail == 0 ? 0 : 1;
 }
 
+// Autograsp against the mock robot + tools/fake_cam_server.py. A non-loopback robot needs --yes-arm-moves
+// (the arm moves without a dead-man; follow the first real-robot procedure in docs/SAFETY_KO.md first).
+int cmd_grasp_selftest(const Args& a, EventLog& log) {
+  if (a.robot.empty() || a.camera_url.empty() || a.calib.empty()) {
+    std::printf("[-] --robot, --camera-url, --calib 가 필요합니다\n");
+    return 2;
+  }
+  // This test runs the whole pick without a human dead-man. On anything but the local mock robot that means a
+  // real arm moving by itself, so it must be asked for explicitly.
+  const bool loopback = a.robot == "127.0.0.1" || a.robot == "localhost" || a.robot == "::1";
+  if (!loopback && !a.arm_moves_ok) {
+    std::printf("[-] %s 는 로컬 가짜 로봇이 아닙니다. 이 시험은 데드맨 없이 팔을 움직입니다.\n"
+                "    실제 로봇이면 docs/SAFETY_KO.md 의 첫 시험 절차를 따른 뒤 --yes-arm-moves 를 붙이세요.\n",
+                a.robot.c_str());
+    return 2;
+  }
+  Check c;
+  std::string err;
+  const double t0 = mono_now();
+  vision::VisionCalib calib;
+  c.ok("보정 파일 읽기", vision::load_calib(a.calib, &calib, &err), err);
+  const auto cam = net::parse_url(a.camera_url);
+  c.ok("영상 주소 해석", cam.has_value(), a.camera_url);
+  if (c.fail) return 1;
+
+  net::CommLog comm;
+  robot::CoreOptions opt;
+  opt.host = a.robot;
+  opt.control_port = a.port;
+  opt.rosbridge_port = a.rosbridge ? a.rosbridge_port : 0;
+  opt.camera_url = a.camera_url;
+  robot::RobotCore core(opt, log, comm);
+  c.ok("UDP 세션 열기", core.start(&err), err);
+  if (!core.started()) return 1;
+  c.ok("로봇 ACK 수신", wait_until(3.0, [&] { core.set_input({}); return core.snapshot().connected; }));
+  core.start_camera();
+
+  vision::VisionWorker vw;
+  vw.set_max_hz(10.0);
+  vw.start();
+  vw.set_enabled(true);
+  uint64_t have = 0;
+  // What the GUI does every frame: fresh neutral input + newest camera frame to the detector.
+  auto pump = [&] {
+    core.set_input({});
+    if (auto f = core.camera().latest(have)) {
+      have = f->seq;
+      vw.submit(std::move(f));
+    }
+  };
+  auto fake_cam = [&](const std::string& query) {
+    std::string e;
+    const auto r = net::http_get(cam->host, cam->port, "/control?" + query, 2.0, 1024, &e);
+    return r && r->status == 200;
+  };
+  const auto classes = vw.detector().classes();
+  int want = -1;
+  for (size_t i = 0; i < classes.size(); ++i)
+    if (classes[i].name == a.grasp_class) want = static_cast<int>(i);
+  c.ok("집을 물체 종류", want >= 0, a.grasp_class);
+  if (want < 0) return 1;
+  auto find_target = [&](int* track, float* u, float* v) {
+    return wait_until(8.0, [&] {
+      pump();
+      const auto ds = vw.latest();
+      if (!ds) return false;
+      for (const auto& d : ds->items)
+        if (d.class_index == want) {
+          *track = d.track_id;
+          *u = d.u;
+          *v = d.v;
+          return true;
+        }
+      return false;
+    });
+  };
+  int track = -1;
+  float du = 0, dv = 0;
+  const bool seen = find_target(&track, &du, &dv);
+  double tx = 0, ty = 0;
+  if (seen) calib.pixel_to_table(du, dv, 0, &tx, &ty);
+  c.ok("물체 인식", seen, seen ? strf("%s (%.0f, %.0f) px -> x %.1f cm, y %.1f cm, 처리 %.1f ms", a.grasp_class.c_str(), du, dv,
+                                         tx * 100, ty * 100, vw.avg_ms())
+                              : core.camera().status());
+  if (!seen) {
+    vw.stop();
+    core.stop();
+    return 1;
+  }
+
+  robot::CoreGraspRobot gr(core);
+  robot::GraspSequencer seq(gr, robot::GraspVision{[&] { return vw.latest(); }, [&] { return vw.detector().classes(); }},
+                            log, robot::GraspOptions{});
+  seq.set_calib(calib);
+  robot::GraspState last = seq.status().state;
+  // Run the sequencer like the GUI frame loop (every 20 ms) until stop() says so or the time runs out.
+  auto run = [&](double secs, const std::function<bool(double)>& deadman, const std::function<bool()>& stop) {
+    const double end = mono_now() + secs;
+    while (mono_now() < end) {
+      pump();
+      const double now = mono_now();
+      seq.tick(now, deadman(now));
+      const auto& st = seq.status();
+      if (st.state != last) {
+        last = st.state;
+        std::printf("       %5.2f s  %-10s %s\n", now - t0, robot::to_string_ko(st.state), st.message.c_str());
+        std::fflush(stdout);
+      }
+      if (stop()) return true;
+      sleep_s(0.02);
+    }
+    return stop();
+  };
+  using GS = robot::GraspState;
+
+  // 1) Full pick: press A (fresh edge), confirm before the descent with a second press, hide the object after
+  //    the lift so the verify step sees an empty table spot.
+  c.ok("물체 선택", seq.select(track, mono_now()));
+  double release_until = mono_now() + 0.1;
+  bool removed = false;
+  run(60.0,
+      [&](double now) {
+        const auto s = seq.status().state;
+        if (s == GS::kConfirm && release_until < now - 0.3) release_until = now + 0.15;  // let go, then press again
+        if (s == GS::kLift && !removed) removed = fake_cam("remove=" + std::to_string(a.grasp_object));
+        return now >= release_until;
+      },
+      [&] {
+        const auto s = seq.status().state;
+        return s == GS::kDone || s == GS::kFailed || s == GS::kAborted;
+      });
+  const auto st = seq.status();
+  c.ok("자동 집기 완료", st.state == GS::kDone, st.message);
+  if (st.plan) {
+    std::printf("       계획: 물체 x %.1f cm, y %.1f cm, %s, 집게 닫힘 %.2f\n", st.plan->obj_x * 100, st.plan->obj_y * 100,
+                st.plan->note.c_str(), st.plan->gripper_close);
+    if (a.expect_xy) {
+      const double e = std::hypot(st.plan->obj_x - a.expect_xy->first, st.plan->obj_y - a.expect_xy->second);
+      c.ok("물체 위치 오차 < 5 mm", e < 0.005, strf("%.1f mm", e * 1000));
+    }
+  }
+  const auto sn = core.snapshot();
+  if (st.plan) {
+    const auto& o = calib.observe_pose;
+    const double d = std::sqrt((sn.target.x - o.x) * (sn.target.x - o.x) + (sn.target.y - o.y) * (sn.target.y - o.y) +
+                               (sn.target.z - o.z) * (sn.target.z - o.z));
+    c.ok("들고 관측 자세로 돌아옴(±2 mm)", d < 0.002, strf("%.1f mm", d * 1000));
+    c.ok("집게가 닫힘 목표 유지", std::fabs(sn.target.gripper - st.plan->gripper_close) < 0.02,
+         strf("%.2f", sn.target.gripper));
+  }
+
+  // 2) Dead-man: put the object back, start again, let go of A during the hover move.
+  fake_cam("reset=1");
+  sleep_s(0.5);
+  const bool again = find_target(&track, &du, &dv);
+  c.ok("물체 다시 인식", again);
+  if (again && seq.select(track, mono_now())) {
+    seq.set_options([] {
+      robot::GraspOptions o;
+      o.confirm_before_descend = false;
+      return o;
+    }());
+    release_until = mono_now() + 0.1;
+    run(30.0, [&](double now) { return now >= release_until; },
+        [&] {
+          const auto s = seq.status().state;
+          return s == GS::kHover || s == GS::kFailed || s == GS::kAborted;
+        });
+    const bool hovering = seq.status().state == GS::kHover;
+    c.ok("두 번째 집기가 위로 이동 단계까지 진행", hovering, seq.status().message);
+    if (hovering) {
+      run(0.15, [](double) { return false; }, [&] { return seq.status().state == GS::kPaused; });
+      run(0.15, [](double) { return false; }, [] { return false; });  // let the control loop see the cancel
+      const auto p0 = core.snapshot();
+      run(0.4, [](double) { return false; }, [] { return false; });
+      const auto p1 = core.snapshot();
+      c.ok("A를 놓으면 일시정지", seq.status().state == GS::kPaused, seq.status().message);
+      c.ok("일시정지 중 팔 목표가 그대로", !p1.goal_active && std::fabs(p1.target.z - p0.target.z) < 1e-6 &&
+                                              std::fabs(p1.target.x - p0.target.x) < 1e-6);
+      release_until = mono_now();
+      run(1.0, [](double) { return true; }, [&] { return seq.status().state == GS::kHover; });
+      c.ok("다시 누르면 같은 단계부터", seq.status().state == GS::kHover);
+      // 3) E-stop while moving aborts the sequence.
+      core.estop();
+      run(1.0, [](double) { return true; }, [&] { return seq.status().state == GS::kAborted; });
+      c.ok("비상정지하면 집기 중단", seq.status().state == GS::kAborted, seq.status().message);
+      c.ok("비상정지 해제", core.clear_estop());
+      wait_until(2.0, [&] { pump(); return !core.snapshot().emergency; });
+    }
+  }
+  seq.cancel();
+  fake_cam("reset=1");
+  vw.stop();
+  core.stop();
+  std::printf("결과: 통과 %d, 실패 %d, 건너뜀 %d (%.1f s)\n", c.pass, c.fail, c.skip, mono_now() - t0);
+  return c.fail == 0 ? 0 : 1;
+}
+
 int cmd_pads(const Args& a) {
   input::Gamepad pad;
   std::printf("XInput: %s\n", pad.backend().c_str());
@@ -314,15 +528,32 @@ int main(int argc, char** argv) {
     else if (s == "--rosbridge-port") a.rosbridge_port = static_cast<int>(parse_int(next()).value_or(9090));
     else if (s == "--camera-port") a.camera_port = static_cast<int>(parse_int(next()).value_or(8080));
     else if (s == "--seconds") a.seconds = static_cast<int>(parse_int(next()).value_or(5));
+    else if (s == "--camera-url") a.camera_url = next();
+    else if (s == "--calib") a.calib = next();
+    else if (s == "--class") a.grasp_class = next();
+    else if (s == "--object") a.grasp_object = static_cast<int>(parse_int(next()).value_or(0));
+    else if (s == "--yes-arm-moves") a.arm_moves_ok = true;
+    else if (s == "--expect-xy") {
+      const std::string v = next();
+      const auto comma = v.find(',');
+      const auto x = comma == std::string::npos ? std::nullopt : parse_double(v.substr(0, comma));
+      const auto y = comma == std::string::npos ? std::nullopt : parse_double(v.substr(comma + 1));
+      if (!x || !y) {
+        usage();
+        return 2;
+      }
+      a.expect_xy = std::make_pair(*x, *y);
+    }
     else {
       usage();
       return 2;
     }
   }
   EventLog log;
-  log.set_echo(a.cmd == "selftest");
+  log.set_echo(a.cmd == "selftest" || a.cmd == "grasp-selftest");
   if (a.cmd == "discover") return cmd_discover(a, log);
   if (a.cmd == "selftest") return cmd_selftest(a, log);
+  if (a.cmd == "grasp-selftest") return cmd_grasp_selftest(a, log);
   if (a.cmd == "pads") return cmd_pads(a);
   if (a.cmd == "version") {
     std::printf("%s\n", kVersion);

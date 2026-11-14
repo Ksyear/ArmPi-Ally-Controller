@@ -59,8 +59,12 @@ double distance3(const ArmTarget& a, double x, double y, double z) {
 }  // namespace
 
 RobotCore::RobotCore(CoreOptions opt, EventLog& log, net::CommLog& comm)
-    : opt_(std::move(opt)), log_(log), comm_(comm), ros_(log, &comm), camera_(log) {
+    : opt_(std::move(opt)), log_(log), comm_(comm), ros_(log, &comm), camera_(log), proj_(make_reach_projector()) {
   speed_ = clampd(opt_.speed, 0.1, 1.0);
+}
+
+std::shared_ptr<kin::TargetProjector> make_reach_projector() {
+  return std::make_shared<kin::TargetProjector>(arm_params(), kWorkspace, kin::ReachOptions{});
 }
 
 RobotCore::~RobotCore() { stop(); }
@@ -78,7 +82,7 @@ bool RobotCore::start(std::string* err) {
   co.home = opt_.home;
   co.log = [this](const std::string& m) { log_.info(m); };
   if (opt_.client_filter) {
-    auto proj = std::make_shared<kin::TargetProjector>(arm_params(), kWorkspace, kin::ReachOptions{});
+    auto proj = proj_;
     co.arm_target_filter = [proj, this](const ArmTarget& want, const ArmTarget& cur) {
       const kin::Pose anchor{cur.x, cur.y, cur.z, cur.pitch};
       const bool anchor_ok = proj->reachable(anchor);
@@ -156,6 +160,8 @@ void RobotCore::step(double now) {
   bool home_now = false;
   std::optional<ArmTarget> goal;
   std::optional<double> goal_grip;
+  uint64_t gid = 0;
+  double rate = 1.0;
   {
     std::lock_guard<std::mutex> lk(mu_);
     fresh = now - input_time_ < kInputTimeoutS;
@@ -165,6 +171,8 @@ void RobotCore::step(double now) {
     speed = speed_;
     goal = goal_;
     goal_grip = goal_grip_;
+    gid = goal_id_;
+    rate = goal_rate_scale_;
     if (home_due_ > 0 && now >= home_due_) {
       home_now = true;
       home_due_ = -1.0;
@@ -181,7 +189,7 @@ void RobotCore::step(double now) {
 
   armpi_protocol::ChannelStatus arm_ch;
   bool retired;
-  bool goal_done = false, arm_activity = false;
+  bool goal_done = false, arm_activity = false, goal_user_cancel = false;
   double goal_dist = -1.0;  // remaining distance to the goal after this tick (m, pitch/gripper weighted)
   if (!released) {
     std::lock_guard<std::recursive_mutex> ck(client_->mutex());  // target move + tick as one unit
@@ -189,6 +197,7 @@ void RobotCore::step(double now) {
     const double k = kLoopPeriodS * fine;
     if (arm_intent && client_->arm().armed && any_arm) {
       // Stick/button rates win over a pending absolute goal.
+      goal_user_cancel = goal.has_value() || goal_grip.has_value();
       goal.reset();
       goal_grip.reset();
       goal_done = true;
@@ -201,17 +210,18 @@ void RobotCore::step(double now) {
       arm_activity = true;
       const ArmTarget cur = client_->arm_target();
       ArmTarget next = cur;
+      const double kg = k * rate;  // slower ramps for e.g. the grasp descent
       if (goal) {
         const double dx = goal->x - cur.x, dy = goal->y - cur.y, dz = goal->z - cur.z;
         const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-        const double maxd = r.arm_m_s * k;
+        const double maxd = r.arm_m_s * kg;
         const double f = dist > maxd ? maxd / dist : 1.0;
         next.x = cur.x + dx * f;
         next.y = cur.y + dy * f;
         next.z = cur.z + dz * f;
-        next.pitch = cur.pitch + clampd(goal->pitch - cur.pitch, -r.pitch_rad_s * k, r.pitch_rad_s * k);
+        next.pitch = cur.pitch + clampd(goal->pitch - cur.pitch, -r.pitch_rad_s * kg, r.pitch_rad_s * kg);
       }
-      if (goal_grip) next.gripper = cur.gripper + clampd(*goal_grip - cur.gripper, -r.gripper_per_s * k, r.gripper_per_s * k);
+      if (goal_grip) next.gripper = cur.gripper + clampd(*goal_grip - cur.gripper, -r.gripper_per_s * kg, r.gripper_per_s * kg);
       client_->set_arm_target(next);
       const ArmTarget after = client_->arm_target();
       const bool pos_ok = !goal || (std::fabs(after.x - goal->x) < 1e-3 && std::fabs(after.y - goal->y) < 1e-3 &&
@@ -271,27 +281,35 @@ void RobotCore::step(double now) {
   {
     std::lock_guard<std::mutex> lk(mu_);
     if (arm_activity) last_arm_activity_ = now;
-    if (goal_done) {
-      goal_.reset();
-      goal_grip_.reset();
-      goal_stall_since_ = -1.0;
-    } else if (goal_dist >= 0.0) {
-      // No progress for 0.5 s = the reach filter holds the target at the nearest reachable pose.
-      if (goal_stall_since_ < 0 || goal_dist < goal_best_ - 5e-4) {
-        goal_best_ = goal_dist;
-        goal_stall_since_ = now;
-      } else if (now - goal_stall_since_ > 0.5) {
+    // Only touch the goal this tick worked on: the UI may have started a new one meanwhile.
+    if (goal_id_ == gid) {
+      if (goal_done) {
+        if (goal_.has_value() || goal_grip_.has_value()) goal_result_ = goal_user_cancel ? GoalResult::kCancelled : GoalResult::kReached;
         goal_.reset();
         goal_grip_.reset();
         goal_stall_since_ = -1.0;
-        log_.info(strf("팔: 목표에 닿을 수 없어 가장 가까운 자세에서 멈춤(남은 거리 %.0f mm)", goal_dist * 1000));
-        stalled_now = true;
+        goal_remaining_ = goal_user_cancel ? goal_remaining_ : 0.0;
+      } else if (goal_dist >= 0.0) {
+        goal_remaining_ = goal_dist;
+        // No progress for 0.5 s = the reach filter holds the target at the nearest reachable pose.
+        if (goal_stall_since_ < 0 || goal_dist < goal_best_ - 5e-4) {
+          goal_best_ = goal_dist;
+          goal_stall_since_ = now;
+        } else if (now - goal_stall_since_ > 0.5) {
+          goal_.reset();
+          goal_grip_.reset();
+          goal_stall_since_ = -1.0;
+          goal_result_ = GoalResult::kStalled;
+          log_.info(strf("팔: 목표에 닿을 수 없어 가장 가까운 자세에서 멈춤(남은 거리 %.0f mm)", goal_dist * 1000));
+          stalled_now = true;
+        }
       }
     }
     if (arm_enabled_ && arm_latched_ && now - last_arm_activity_ > opt_.latched_arm_idle_s) {
       arm_enabled_ = false;
       arm_latched_ = false;
       idle_off = true;
+      cancel_goal_locked();
     }
   }
   if (stalled_now) bump_limit(now);
@@ -301,6 +319,7 @@ void RobotCore::step(double now) {
       std::lock_guard<std::mutex> lk(mu_);
       arm_enabled_ = false;
       arm_latched_ = false;
+      cancel_goal_locked();
     }
     log_.warn("팔 조종 꺼짐(" + (arm_ch.last_block_reason.empty() ? std::string("세션 없음") : arm_ch.last_block_reason) +
               ") — 다시 켜야 함");
@@ -381,6 +400,9 @@ void RobotCore::update_snapshot(double now) {
   n.arm_enabled = arm_enabled_;
   n.arm_latched = arm_enabled_ && arm_latched_;
   n.goal_active = goal_.has_value() || goal_grip_.has_value();
+  n.goal_result = goal_result_;
+  n.goal_id = goal_id_;
+  n.goal_remaining_m = goal_remaining_;
   n.speed = speed_;
   n.limit_active = now < limit_until_;
   n.loop_hz = loop_hz_;
@@ -465,20 +487,31 @@ void RobotCore::set_arm_enabled(bool on, bool latched) {
     last_arm_activity_ = mono_now();
   }
   if (!on) {
-    goal_.reset();
-    goal_grip_.reset();
+    cancel_goal_locked();
   }
   arm_enabled_ = on;
   arm_latched_ = on && latched;
 }
 
-void RobotCore::arm_goto(const ArmTarget& t) {
-  if (!client_) return;
+// Caller holds mu_. Starts a fresh goal: new id, no result yet, stall tracking reset.
+uint64_t RobotCore::new_goal_locked(double rate_scale) {
+  ++goal_id_;
+  goal_result_ = GoalResult::kNone;
+  goal_rate_scale_ = clampd(rate_scale, 0.2, 1.0);
+  goal_stall_since_ = -1.0;
+  goal_remaining_ = -1.0;
+  last_arm_activity_ = mono_now();
+  return goal_id_;
+}
+
+uint64_t RobotCore::arm_goto(const ArmTarget& t, double rate_scale) {
+  if (!client_) return 0;
   if (!arm_enabled()) set_arm_enabled(true, true);
   std::lock_guard<std::mutex> lk(mu_);
+  if (!arm_enabled_) return 0;
   goal_ = ArmTarget{t.x, t.y, t.z, clampd(t.pitch, -kPi, kPi), 0.0};
   goal_grip_ = clampd(t.gripper, 0.0, 1.0);
-  last_arm_activity_ = mono_now();
+  return new_goal_locked(rate_scale);
 }
 
 void RobotCore::arm_goto_partial(std::optional<double> x, std::optional<double> y, std::optional<double> z,
@@ -493,7 +526,7 @@ void RobotCore::arm_goto_partial(std::optional<double> x, std::optional<double> 
   if (z) g.z = *z;
   if (pitch) g.pitch = clampd(*pitch, -kPi, kPi);
   goal_ = g;
-  last_arm_activity_ = mono_now();
+  new_goal_locked(1.0);
 }
 
 void RobotCore::arm_nudge(double dx, double dy, double dz, double dpitch) {
@@ -507,21 +540,43 @@ void RobotCore::arm_nudge(double dx, double dy, double dz, double dpitch) {
   g.z += dz;
   g.pitch = clampd(g.pitch + dpitch, -kPi, kPi);
   goal_ = g;
-  last_arm_activity_ = mono_now();
+  new_goal_locked(1.0);
 }
 
-void RobotCore::set_gripper(double g) {
-  if (!client_) return;
+uint64_t RobotCore::set_gripper(double g) {
+  if (!client_) return 0;
   if (!arm_enabled()) set_arm_enabled(true, true);
   std::lock_guard<std::mutex> lk(mu_);
+  if (!arm_enabled_) return 0;
   goal_grip_ = clampd(g, 0.0, 1.0);
-  last_arm_activity_ = mono_now();
+  return new_goal_locked(1.0);
+}
+
+void RobotCore::cancel_goal_locked() {
+  if (goal_.has_value() || goal_grip_.has_value()) goal_result_ = GoalResult::kCancelled;
+  goal_.reset();
+  goal_grip_.reset();
+  goal_stall_since_ = -1.0;
 }
 
 void RobotCore::cancel_goal() {
   std::lock_guard<std::mutex> lk(mu_);
-  goal_.reset();
-  goal_grip_.reset();
+  cancel_goal_locked();
+}
+
+bool RobotCore::reachable(const ArmTarget& t) const {
+  if (!proj_) return false;
+  return proj_->reachable(kin::Pose{t.x, t.y, t.z, t.pitch});
+}
+
+const char* to_string(GoalResult r) {
+  switch (r) {
+    case GoalResult::kNone: return "none";
+    case GoalResult::kReached: return "reached";
+    case GoalResult::kStalled: return "stalled";
+    case GoalResult::kCancelled: return "cancelled";
+  }
+  return "?";
 }
 
 void RobotCore::estop() {
@@ -529,8 +584,7 @@ void RobotCore::estop() {
   std::lock_guard<std::mutex> lk(mu_);
   arm_enabled_ = false;
   arm_latched_ = false;
-  goal_.reset();
-  goal_grip_.reset();
+  cancel_goal_locked();
   input_ = ControlInput{};
   input_time_ = -1e9;
   log_.error("비상정지!");
@@ -547,6 +601,7 @@ bool RobotCore::robot_estop(std::string* err) {
   {
     std::lock_guard<std::mutex> lk(mu_);
     arm_enabled_ = false;
+    cancel_goal_locked();
   }
   return ros_.call_trigger("/armpi/emergency_stop", err);
 }
@@ -561,6 +616,7 @@ bool RobotCore::arm_home(std::string* err) {
   std::lock_guard<std::mutex> lk(mu_);
   // The robot refuses /armpi/arm/home while the arm channel is active: send arm-neutral first, call shortly after.
   arm_enabled_ = false;
+  cancel_goal_locked();
   home_due_ = mono_now() + 0.25;
   return true;
 }
@@ -596,6 +652,7 @@ void RobotCore::release_session() {
     if (released_) return;
     released_ = true;
     arm_enabled_ = false;
+    cancel_goal_locked();
   }
   client_->disconnect();
   log_.info("조종 세션을 놓음(disconnect) — 다른 조종기·관절 직접 조종 가능");
@@ -607,6 +664,7 @@ void RobotCore::new_session() {
   std::lock_guard<std::mutex> lk(mu_);
   released_ = false;
   arm_enabled_ = false;
+  cancel_goal_locked();
   log_.info("새 조종 세션");
 }
 
