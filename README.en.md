@@ -39,7 +39,7 @@ Version **0.4.2** · [한국어 README](README.md) · MIT licence · Win32 + Dir
 
 | What | Result |
 |---|---|
-| Unit tests (protocol helpers, mapper, haptics, security limits, tilt maths) | 77/77 |
+| Unit tests (protocol helpers, mapper, haptics, security limits, tilt maths, capture masking) | 82/82 |
 | Vision + autograsp unit tests (detection, homography, calibration files, planner, the whole state machine incl. dead-man, e-stop, interventions, base approach, intrusion check) | 180/180 |
 | Mock robot end-to-end (discovery, drive, arm ramps, reach limit, e-stop, rosbridge, camera, joint debug) | 21/21 |
 | Autograsp end-to-end (mock robot + synthetic camera: pick, pause/resume, e-stop abort, base approach then pick) | 22/22 |
