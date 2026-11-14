@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(armpi_ally_controller VERSION 0.3.0 LANGUAGES CXX)
+project(armpi_ally_controller VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,7 +44,8 @@ add_library(ally_core STATIC
   src/vision/calibration.cpp
   src/vision/vision_worker.cpp
   src/input/pad.cpp
-  src/input/mapper.cpp)
+  src/input/mapper.cpp
+  src/input/tilt.cpp)
 target_include_directories(ally_core PUBLIC src)
 target_include_directories(ally_core SYSTEM PRIVATE third_party/stb)
 target_link_libraries(ally_core PUBLIC armpi_shared Threads::Threads)
@@ -55,7 +56,7 @@ target_compile_options(ally_core PRIVATE ${ALLY_WARNINGS})
 if(WIN32)
   target_compile_definitions(ally_core PUBLIC _WIN32_WINNT=0x0A00 WINVER=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX
                                               UNICODE _UNICODE)
-  target_link_libraries(ally_core PUBLIC ws2_32 iphlpapi)
+  target_link_libraries(ally_core PUBLIC ws2_32 iphlpapi sensorsapi ole32 propsys)
   if(MINGW)
     # One self-contained exe: no libstdc++/libgcc/winpthread DLLs next to it.
     # ASLR (incl. high entropy) and DEP stated explicitly; stack protector + fortify for our code.

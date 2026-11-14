@@ -189,6 +189,9 @@ class GraspSequencer {
   float sel_area_{0};
   // base approach
   double burst_start_{-1}, settle_until_{-1}, lost_since_{-1}, last_frame_at_{-1}, last_cmd_at_{-1};
+  double burst_r_{-1}, burst_b_{0};  // distance / |bearing| at the start of the current burst (progress check)
+  int approach_count_{0};           // base approaches in this pick (approach <-> observe loops are capped)
+  int global_frames_{0};            // consecutive whole-image changes (intrusion check)
   // intrusion check
   std::vector<uint8_t> ref_gray_;
   int ref_gw_{0}, ref_gh_{0};

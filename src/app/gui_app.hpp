@@ -19,6 +19,7 @@
 #include "imgui.h"
 #include "input/mapper.hpp"
 #include "input/pad.hpp"
+#include "input/tilt.hpp"
 #include "net/comm_log.hpp"
 #include "net/discovery.hpp"
 #include "robot/autograsp.hpp"
@@ -173,6 +174,12 @@ class GuiApp {
   std::optional<vision::HsvRange> color_sample_;
   uint32_t color_sample_rgb_{0};
   bool user_active_{false};
+  // tilt driving (RT held): sensor, reference pose captured on the press, current output for the HUD
+  input::TiltSensor tilt_;
+  bool tilt_tried_{false}, tilt_on_{false}, tilt_armed_{false}, tilt_warned_{false}, tilt_ref_set_{false};
+  double tilt_ref_pitch_{0}, tilt_ref_roll_{0}, tilt_press_t_{0};
+  bool grasp_armed_{false};  // the grasp dead-man must be seen released after any interruption
+  input::TiltDrive tilt_out_;
   ImVec2 touch_targets_[2]{};  // the user is driving / moving the arm this frame (pauses autograsp)
 
   std::string demo_host_;

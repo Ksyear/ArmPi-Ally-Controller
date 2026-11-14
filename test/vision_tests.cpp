@@ -366,6 +366,7 @@ struct FakeScene {
   std::vector<vision::ObjectClass> cls = vision::default_classes();
   std::vector<Obj> objs{{"빨간 블록", 0.18, 0.00, 7}};
   bool present{true};  // shortcut for objs[0].shown
+  bool frozen{false};   // camera image stops following the base (stuck stream)
   // brightness thumbnail (80 x 60 = 1/8 of 640 x 480): flat table + optional bright patch in image pixels
   bool with_gray{false};
   uint8_t base_gray{128};
@@ -381,9 +382,10 @@ struct FakeScene {
     for (const auto& o : objs) {
       if (!o.shown) continue;
       // world -> robot frame -> synthetic camera (u = 320 - 1500 y, v = 555 - 1500 x)
-      const double dx = o.wx - bot.px, dy = o.wy - bot.py;
-      const double xr = std::cos(bot.yaw) * dx + std::sin(bot.yaw) * dy;
-      const double yr = -std::sin(bot.yaw) * dx + std::cos(bot.yaw) * dy;
+      const double bx = frozen ? 0 : bot.px, by = frozen ? 0 : bot.py, byaw = frozen ? 0 : bot.yaw;
+      const double dx = o.wx - bx, dy = o.wy - by;
+      const double xr = std::cos(byaw) * dx + std::sin(byaw) * dy;
+      const double yr = -std::sin(byaw) * dx + std::cos(byaw) * dy;
       vision::Detection d;
       d.class_index = class_named(cls, o.cls);
       d.u = static_cast<float>(320.0 - 1500.0 * yr);
@@ -721,6 +723,29 @@ void test_approach() {
     CHECK(r.run_until(robot::GraspState::kFailed, true));
     CHECK(r.bot.auto_cmds == 0 && r.seq.status().failed_state == robot::GraspState::kPlan);
   }
+  {  // Stuck image (no progress over a burst) -> stop and fail instead of using up the budget
+    Rig r(o);
+    r.scene.frozen = true;
+    r.scene.objs.push_back({"초록 블록", 0.36, 0.08, 9});
+    r.step(false);
+    r.start(9);
+    CHECK(r.run_until(robot::GraspState::kFailed, true, 200));
+    CHECK(r.seq.status().message.find("다가가지 못함") != std::string::npos && !r.bot.base_moving());
+    CHECK(r.seq.status().approach_used_s < 3.0);
+  }
+  {  // Option switched off during the approach -> stop at once
+    Rig r(o);
+    r.scene.objs.push_back({"초록 블록", 0.36, 0.08, 9});
+    r.step(false);
+    r.start(9);
+    CHECK(r.run_until(robot::GraspState::kApproachBase, true));
+    r.step(true);
+    robot::GraspOptions off = o;
+    off.base_approach = false;
+    r.seq.set_options(off);
+    r.step(true);
+    CHECK(r.seq.status().state == robot::GraspState::kFailed && !r.bot.base_moving());
+  }
   {  // Object disappears during the approach -> stop, then fail
     Rig r(o);
     r.scene.objs.push_back({"초록 블록", 0.36, 0.08, 9});
@@ -767,6 +792,17 @@ void test_intrusion() {
     r.scene.base_gray = 250;
     for (int i = 0; i < 3; ++i) r.step(true);
     CHECK(r.seq.status().state == robot::GraspState::kHover && !r.seq.status().intrusion_watch);
+  }
+  {  // Whole image changes before the arm moves (gripper opening) -> pause, not "camera on the arm"
+    Rig r(o);
+    r.scene.with_gray = true;
+    r.start();
+    CHECK(r.run_until(robot::GraspState::kObserve, true));
+    r.bot.auto_reach = false;  // the observe goal is already reached; the gripper goal will hang
+    CHECK(r.run_until(robot::GraspState::kOpenGripper, true));
+    r.scene.base_gray = 250;
+    r.step(true);
+    CHECK(r.seq.status().state == robot::GraspState::kPaused);
   }
   {  // Option off: no watch
     Rig r;

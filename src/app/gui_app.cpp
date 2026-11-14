@@ -294,7 +294,47 @@ void GuiApp::handle_input(double now) {
     }
   }
 
-  const auto r = mapper_.map(pad, k, touch_, now, focused_);
+  auto r = mapper_.map(pad, k, touch_, now, focused_);
+  // Tilt driving: only while RT is held (and not the arm dead-man), relative to the pose at the moment of the press.
+  tilt_out_ = input::TiltDrive{};
+  // RT must be seen released (focused, pad present) before a press counts: no tilt driving straight after a focus
+  // return or a pad reconnect with RT still held.
+  if (!focused_ || !pad.connected) tilt_armed_ = false;
+  else if (pad.rt < 0.1f) tilt_armed_ = true;
+  const bool tilt_want = settings_.tilt_drive && focused_ && pad.connected && tilt_armed_ && pad.rt > 0.5f && !r.arm_hold;
+  if (settings_.tilt_drive && !tilt_tried_) {
+    tilt_tried_ = true;
+    tilt_.start();  // background thread; never blocks this frame
+  }
+  if (tilt_.state() < 0 && !tilt_warned_ && settings_.tilt_drive) {
+    tilt_warned_ = true;
+    notify("기울기 주행: 가속도계 없음", Status::kWarn, 3.0);
+  }
+  if (tilt_want) {
+    if (!tilt_on_) {
+      tilt_on_ = true;
+      tilt_ref_set_ = false;
+      tilt_press_t_ = now;
+    }
+    input::Gravity g;
+    double stamp = 0;
+    if (tilt_.read(&g, &stamp)) {
+      const double p = input::tilt_pitch_deg(g), rl = input::tilt_roll_deg(g);
+      if (!tilt_ref_set_ && stamp > tilt_press_t_) {  // reference = the first answer after the press, not an old cache
+        tilt_ref_set_ = true;
+        tilt_ref_pitch_ = p;
+        tilt_ref_roll_ = rl;
+      }
+      if (tilt_ref_set_) {
+        tilt_out_ = input::tilt_to_drive(p, rl, tilt_ref_pitch_, tilt_ref_roll_, 5.0,
+                                         std::clamp(static_cast<double>(settings_.tilt_full_deg), 12.0, 45.0));
+        r.input.forward = std::clamp(r.input.forward + tilt_out_.forward, -1.0, 1.0);
+        r.input.turn = std::clamp(r.input.turn + tilt_out_.turn, -1.0, 1.0);
+      }
+    }
+  } else {
+    tilt_on_ = false;
+  }
   user_active_ = std::fabs(r.input.forward) > 1e-3 || std::fabs(r.input.strafe) > 1e-3 || std::fabs(r.input.turn) > 1e-3 ||
                  r.arm_hold;
   for (double v : r.input.arm) user_active_ = user_active_ || std::fabs(v) > 1e-3;
@@ -649,8 +689,9 @@ void GuiApp::draw_camera(ImVec2 o, ImVec2 size) {
       w::osd_text(dl, ImVec2(o1.x - m - s1.x, o.y + m), F().mono, fs::label, c, l1.c_str());
       w::osd_text(dl, ImVec2(o1.x - m - s2.x, o.y + m + s1.y + S(4)), F().mono, fs::label, c, l2.c_str());
     }
-    // bottom-left: drive vector
+    // bottom-left: drive vector (+ tilt driving tag)
     const ImVec2 dc(o.x + m + S(44), o1.y - m - S(44));
+    if (tilt_on_) w::osd_text(dl, ImVec2(o.x + m, o1.y - m - S(88) - S(30)), F().semibold, fs::label, col::accent, "기울기 주행 · RT");
     dl->AddCircle(dc, S(44), col::alpha(col::white, 0.7f), 40, S(2));
     dl->AddLine(dc, ImVec2(dc.x - static_cast<float>(snap.applied_s) * S(44), dc.y - static_cast<float>(snap.applied_f) * S(44)), col::accent, S(4));
     if (std::fabs(snap.applied_t) > 1e-3) {
@@ -1281,7 +1322,7 @@ void GuiApp::draw_tab_settings(ImVec2 size) {
     settings_.camera_port = std::clamp(settings_.camera_port, 1, 65535);
   }
   w::end_card();
-  if (w::begin_card("s_input", "입력", ImVec2(wdt, S(236)))) {
+  if (w::begin_card("s_input", "입력", ImVec2(wdt, settings_.tilt_drive ? S(340) : S(284)))) {
     ImGui::PushItemWidth(-1);
     form_label("스틱 데드존", lw);
     ImGui::SliderFloat("##dz", &settings_.deadzone, 0.05f, 0.35f, "%.2f");
@@ -1289,6 +1330,13 @@ void GuiApp::draw_tab_settings(ImVec2 size) {
     ImGui::SliderFloat("##cv", &settings_.curve, 1.0f, 2.5f, "%.1f");
     ImGui::PopItemWidth();
     ImGui::Checkbox("LB 중에도 왼스틱으로 주행(고급)", &settings_.allow_drive_while_arm);
+    ImGui::Checkbox("기울기 주행: RT를 누른 동안 Ally를 기울여 주행", &settings_.tilt_drive);
+    if (settings_.tilt_drive) {
+      ImGui::PushItemWidth(-1);
+      form_label("최대 속도 기울기", lw);
+      ImGui::SliderFloat("##tilt", &settings_.tilt_full_deg, 12.0f, 45.0f, "%.0f°");
+      ImGui::PopItemWidth();
+    }
   }
   w::end_card();
   if (w::begin_card("s_fb", "화면·진동", ImVec2(wdt, S(470)))) {

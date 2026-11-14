@@ -87,7 +87,9 @@ std::string settings_to_json(const Settings& s) {
     << "  \"autograsp_confirm\": " << json::boolean(s.autograsp_confirm) << ",\n"
     << "  \"autograsp_retry\": " << s.autograsp_retry << ",\n"
     << "  \"autograsp_base\": " << json::boolean(s.autograsp_base) << ",\n"
-    << "  \"autograsp_intrusion\": " << json::boolean(s.autograsp_intrusion) << "\n"
+    << "  \"autograsp_intrusion\": " << json::boolean(s.autograsp_intrusion) << ",\n"
+    << "  \"tilt_drive\": " << json::boolean(s.tilt_drive) << ",\n"
+    << "  \"tilt_full_deg\": " << json::number(s.tilt_full_deg) << "\n"
     << "}\n";
   return o.str();
 }
@@ -142,6 +144,8 @@ bool settings_from_json(const std::string& text, Settings* s, std::string* err) 
   i32("autograsp_retry", &s->autograsp_retry, 0, 2);
   bln("autograsp_base", &s->autograsp_base);
   bln("autograsp_intrusion", &s->autograsp_intrusion);
+  bln("tilt_drive", &s->tilt_drive);
+  flt("tilt_full_deg", &s->tilt_full_deg, 12.0, 45.0);
   return true;
 }
 

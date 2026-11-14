@@ -514,6 +514,20 @@ void GraspSequencer::step_plan(double now) {
       fail(now, err);
       return;
     }
+    // Only for an object that is plausibly on the floor in front: 20-60 cm away and at most 90 degrees to the side.
+    const double r = std::hypot(x, y), bearing = std::atan2(y, x);
+    if (r > 0.60 || std::fabs(bearing) > kPi / 2) {
+      fail(now, "물체가 너무 멀거나 옆·뒤에 있습니다 — 차체를 직접 옮기세요");
+      return;
+    }
+    if (r <= 0.20) {
+      fail(now, err + " — 물체가 너무 가깝거나 높이가 맞지 않습니다");
+      return;
+    }
+    if (approach_count_ >= 3) {
+      fail(now, "차체 접근을 3번 했지만 팔이 닿지 않습니다 — 차체를 직접 옮기세요");
+      return;
+    }
     if (robot_.snapshot().speed > 0.30 + 1e-9) {
       fail(now, "물체가 팔 범위 밖입니다. 차체 자동 접근은 속도 상한 30 % 이하에서만 합니다");
       return;
@@ -523,9 +537,10 @@ void GraspSequencer::step_plan(double now) {
       return;
     }
     log_.info(strf("집기: 물체가 팔 범위 밖(x %.1f cm, y %.1f cm) — 차체 접근", x * 100, y * 100));
+    ++approach_count_;
     enter(GraspState::kApproachBase, now, "물체 쪽으로 차체를 천천히 움직입니다");
     burst_start_ = last_frame_at_ = last_cmd_at_ = now;
-    settle_until_ = lost_since_ = -1;
+    settle_until_ = lost_since_ = burst_r_ = -1;
     return;
   }
   st_.plan = p;
@@ -579,6 +594,10 @@ void GraspSequencer::step_verify(double now, const CoreSnapshot& s) {
 
 void GraspSequencer::step_approach(double now, const CoreSnapshot& s) {
   (void)s;
+  if (!opt_.base_approach) {
+    fail(now, "차체 접근을 껐습니다");
+    return;
+  }
   if (st_.base_moving && last_cmd_at_ >= 0) st_.approach_used_s += now - last_cmd_at_;
   last_cmd_at_ = now;
   if (st_.approach_used_s > opt_.approach_total_s) {
@@ -589,6 +608,7 @@ void GraspSequencer::step_approach(double now, const CoreSnapshot& s) {
     if (now < settle_until_) return;
     settle_until_ = -1;
     burst_start_ = now;
+    burst_r_ = -1;
   }
   const auto ds = vision_.latest ? vision_.latest() : nullptr;
   if (!ds || ds->frame_seq == last_seq_) {
@@ -598,17 +618,9 @@ void GraspSequencer::step_approach(double now, const CoreSnapshot& s) {
   }
   last_seq_ = ds->frame_seq;
   last_frame_at_ = now;
-  // Base motion shifts the object in the image: look further than usual, or take the only one of that class.
+  // Base motion shifts the object in the image a little per frame: look a bit further than usual, but never jump to
+  // another object of the same colour.
   const vision::Detection* d = find_near(*ds, st_.class_index, st_.sel_u, st_.sel_v, 2.0f * kTrackRadiusPx);
-  if (!d) {
-    int n = 0;
-    for (const auto& it : ds->items)
-      if (it.class_index == st_.class_index) {
-        ++n;
-        d = &it;
-      }
-    if (n != 1) d = nullptr;
-  }
   if (!d) {
     stop_base();
     if (lost_since_ < 0) lost_since_ = now;
@@ -638,20 +650,38 @@ void GraspSequencer::step_approach(double now, const CoreSnapshot& s) {
     send_step(now);
     return;
   }
+  const double bearing = std::atan2(y, x), r = std::hypot(x, y);
+  if (r > 0.65 || std::fabs(bearing) > 100.0 * kDeg) {
+    fail(now, "물체 위치가 이상합니다(너무 멀거나 옆) — 차체 접근 중단");
+    return;
+  }
+  if (r <= 0.20) {  // never reverse blind: the camera does not see behind the robot
+    fail(now, "물체가 너무 가깝습니다 — 차체를 직접 조금 뒤로 옮기세요");
+    return;
+  }
+  if (burst_r_ < 0) {
+    burst_r_ = r;
+    burst_b_ = std::fabs(bearing);
+  }
   if (now - burst_start_ > opt_.approach_burst_s) {
     stop_base();
+    // Each burst must bring the object closer or more straight ahead (a frozen image or a stuck base does not).
+    const bool progressed = r < burst_r_ - 0.01 || std::fabs(bearing) < burst_b_ - 2.0 * kDeg;
+    if (!progressed) {
+      fail(now, "차체가 다가가지 못함(영상 속 물체가 그대로) — 중단");
+      return;
+    }
     settle_until_ = now + 0.6;
     return;
   }
   // Turn until the object is straight ahead (+turn = counter-clockwise = towards +y), then drive along x.
-  const double bearing = std::atan2(y, x);
   double fwd = 0.0, turn = 0.0;
-  if (std::fabs(bearing) > 6.0 * kDeg) {
-    turn = std::copysign(std::clamp(1.2 * std::fabs(bearing), 0.15, 0.35), bearing);
-  } else {
-    fwd = std::hypot(x, y) > 0.20 ? 0.3 : -0.3;  // too far: forward; too close (under the arm): back off
-  }
-  if (!robot_.set_auto_base(fwd, turn, 0.3)) {
+  if (std::fabs(bearing) > 6.0 * kDeg) turn = std::copysign(std::clamp(1.2 * std::fabs(bearing), 0.15, 0.35), bearing);
+  else fwd = 0.3;
+  // Command life never reaches past the burst or the total budget.
+  const double ttl = std::max(0.05, std::min({0.3, opt_.approach_burst_s - (now - burst_start_),
+                                               opt_.approach_total_s - st_.approach_used_s}));
+  if (!robot_.set_auto_base(fwd, turn, ttl)) {
     fail(now, "차체 접근이 거부됨 — 속도 상한 30 % 이하에서만 합니다");
     return;
   }
@@ -718,11 +748,15 @@ bool GraspSequencer::intrusion(const vision::DetectionSet& ds) {
       ++outside;
     }
   if (changed > 0.6 * ds.gw * ds.gh) {
-    // Nearly the whole image changed: the camera moves with the arm, so this check cannot work here.
+    // Nearly the whole image changed. Before the arm moves (open gripper) that is something in front of the camera:
+    // pause. While the arm moves, three such frames in a row mean the camera rides on the arm: switch the check off.
+    if (st_.state < GraspState::kHover) return true;
+    if (++global_frames_ < 3) return false;
     st_.intrusion_watch = false;
     log_.warn("집기: 영상 전체가 바뀜(카메라가 팔에 달린 듯) — 이번 집기는 작업 영역 감시를 끔");
     return false;
   }
+  global_frames_ = 0;
   const double limit_px = std::max(3.0 * sel_area_, 0.02 * ds.img_w * ds.img_h);
   return outside * cw * ch > limit_px;
 }
@@ -760,6 +794,8 @@ void GraspSequencer::tick(double now, bool deadman) {
     st_.approach_used_s = 0;
     st_.intrusion_watch = false;
     ref_gray_.clear();
+    approach_count_ = 0;
+    global_frames_ = 0;
     goal_retried_ = false;
     log_.info("집기: 시작");
     enter(GraspState::kObserve, now);
@@ -787,7 +823,7 @@ void GraspSequencer::tick(double now, bool deadman) {
       step_plan(now);
     } else if (back == GraspState::kApproachBase) {
       burst_start_ = last_frame_at_ = last_cmd_at_ = now;
-      settle_until_ = lost_since_ = -1;
+      settle_until_ = lost_since_ = burst_r_ = -1;
     } else if (is_motion(back)) {
       send_step(now);
     }

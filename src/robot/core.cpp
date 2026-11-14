@@ -452,7 +452,7 @@ bool RobotCore::set_auto_base(double forward, double turn, double ttl_s) {
   std::lock_guard<std::mutex> lk(mu_);
   const bool stop = !std::isfinite(forward) || !std::isfinite(turn) || !std::isfinite(ttl_s) || ttl_s <= 0 ||
                     (std::fabs(forward) < 1e-6 && std::fabs(turn) < 1e-6);
-  if (stop || released_ || speed_ > kAutoMaxSpeed + 1e-9) {
+  if (stop || released_ || speed_ > kAutoMaxSpeed + 1e-9 || snap_.emergency || snap_.estop_pending) {
     auto_until_ = -1.0;
     return stop;
   }

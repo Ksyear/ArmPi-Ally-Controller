@@ -3,6 +3,7 @@
 //   selftest --robot IP run the whole non-GUI stack against a robot or the mock robot, print PASS/FAIL
 //   grasp-selftest      autograsp end to end: detect -> plan -> pick -> verify, then dead-man pause and e-stop abort
 //   pads                show XInput gamepad state (Windows), with --rumble to test vibration
+//   tilt                show the accelerometer and what tilt driving would send (nothing is sent)
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -14,6 +15,7 @@
 
 #include "common/util.hpp"
 #include "input/pad.hpp"
+#include "input/tilt.hpp"
 #include "net/discovery.hpp"
 #include "net/http.hpp"
 #include "net/sock.hpp"
@@ -75,6 +77,7 @@ void usage() {
       "                          [--approach-class 이름 --approach-object N]  (팔 범위 밖 물체로 차체 접근 시험)\n"
       "                          [--yes-arm-moves]  (127.0.0.1 이 아닌 로봇에서는 필수: 데드맨 없이 팔·차체가 움직임)\n"
       "  armpi_ally_cli pads [--seconds N] [--rumble 밀리초]\n"
+      "  armpi_ally_cli tilt [--seconds N]   (기울기 센서 값과 기울기 주행 값 보기, 로봇에는 아무것도 보내지 않음)\n"
       "  armpi_ally_cli version\n",
       kVersion);
 }
@@ -514,6 +517,37 @@ int cmd_grasp_selftest(const Args& a, EventLog& log) {
   return c.fail == 0 ? 0 : 1;
 }
 
+int cmd_tilt(const Args& a) {
+  input::TiltSensor ts;
+  std::string err;
+  if (!ts.open(&err)) {
+    std::printf("[-] 기울기 센서: %s\n", err.c_str());
+    return 1;
+  }
+  input::Gravity g;
+  if (!wait_until(2.0, [&] { return ts.read(&g); })) {
+    std::printf("[-] 가속도계 값을 읽지 못함\n");
+    return 1;
+  }
+  const double p0 = input::tilt_pitch_deg(g), r0 = input::tilt_roll_deg(g);
+  std::printf("[+] 가속도계 연결. 기준 자세 pitch %+.1f°, roll %+.1f° (RT를 누른 순간이 기준이 되는 것과 같음)\n", p0, r0);
+  const double end = mono_now() + a.seconds;
+  int misses = 0;
+  while (mono_now() < end) {
+    if (!ts.read(&g)) {
+      if (++misses % 8 == 1) std::printf("    (새 값 없음: %s)\n", ts.last_error().c_str());
+    } else {
+      const double p = input::tilt_pitch_deg(g), r = input::tilt_roll_deg(g);
+      const auto d = input::tilt_to_drive(p, r, p0, r0, 5.0, 25.0);
+      std::printf("g (%+.2f %+.2f %+.2f)  pitch %+6.1f°  roll %+6.1f°  ->  전진 %+.2f  회전 %+.2f   (%s)\n", g.x, g.y, g.z, p,
+                  r, d.forward, d.turn, ts.last_error().c_str());
+      std::fflush(stdout);
+    }
+    sleep_s(0.25);
+  }
+  return 0;
+}
+
 int cmd_pads(const Args& a) {
   input::Gamepad pad;
   std::printf("XInput: %s\n", pad.backend().c_str());
@@ -607,6 +641,7 @@ int main(int argc, char** argv) {
   if (a.cmd == "selftest") return cmd_selftest(a, log);
   if (a.cmd == "grasp-selftest") return cmd_grasp_selftest(a, log);
   if (a.cmd == "pads") return cmd_pads(a);
+  if (a.cmd == "tilt") return cmd_tilt(a);
   if (a.cmd == "version") {
     std::printf("%s\n", kVersion);
     return 0;

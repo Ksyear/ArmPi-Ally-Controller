@@ -272,6 +272,7 @@ void open_folder(const std::string& path) {
 struct Contact {
   POINT pos{}, down{};
   bool fresh{true};
+  bool up{false};  // lifted, but kept until the UI has seen it once (a quick tap must still reach the e-stop)
 };
 std::map<UINT32, Contact> g_touches;
 
@@ -280,7 +281,11 @@ void on_pointer(HWND hwnd, UINT msg, WPARAM wp) {
   POINTER_INPUT_TYPE type = PT_POINTER;
   if (!GetPointerType(id, &type) || type != PT_TOUCH) return;
   if (msg == WM_POINTERUP || msg == WM_POINTERCAPTURECHANGED) {
-    g_touches.erase(id);
+    auto it = g_touches.find(id);
+    if (it != g_touches.end()) {
+      if (it->second.fresh) it->second.up = true;  // not reported yet: report it once, then drop it
+      else g_touches.erase(it);
+    }
     return;
   }
   POINTER_INFO pi{};
@@ -301,14 +306,17 @@ void on_pointer(HWND hwnd, UINT msg, WPARAM wp) {
 
 std::vector<ally::ui::TouchPoint> take_touches() {
   std::vector<ally::ui::TouchPoint> out;
-  for (auto& [id, c] : g_touches) {
+  for (auto it = g_touches.begin(); it != g_touches.end();) {
+    Contact& c = it->second;
     ally::ui::TouchPoint t;
-    t.id = id;
+    t.id = it->first;
     t.pos = ImVec2(static_cast<float>(c.pos.x), static_cast<float>(c.pos.y));
     t.down_pos = ImVec2(static_cast<float>(c.down.x), static_cast<float>(c.down.y));
     t.just_down = c.fresh;
     c.fresh = false;
     out.push_back(t);
+    if (c.up) it = g_touches.erase(it);
+    else ++it;
   }
   return out;
 }
@@ -340,7 +348,7 @@ void demo_touch_step(int frame, const ally::ui::GuiApp& app) {
   if (!g_dt.on || frame < kStart) return;
   if (frame == kStart) {
     const ImVec2 s = app.touch_target(0), e = app.touch_target(1);
-    g_dt.a = POINT{static_cast<LONG>(s.x), static_cast<LONG>(s.y - 30)};  // stick pushed a little forward
+    g_dt.a = POINT{static_cast<LONG>(s.x), static_cast<LONG>(s.y)};  // holds the stick at its centre: no drive command
     g_dt.b = POINT{static_cast<LONG>(e.x), static_cast<LONG>(e.y)};
     ClientToScreen(g_hwnd, &g_dt.a);
     ClientToScreen(g_hwnd, &g_dt.b);

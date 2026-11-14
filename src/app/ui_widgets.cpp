@@ -230,11 +230,16 @@ const TouchPoint* touch_claim(ImGuiID id, ImVec2 a, ImVec2 b) {
   auto& c = ctx();
   for (const TouchPoint& t : c.touches) {
     auto own = std::find_if(c.touch_owner.begin(), c.touch_owner.end(), [&](const auto& o) { return o.first == t.id; });
+    if (t.just_down && own != c.touch_owner.end()) {  // a reused pointer id: the old claim is void
+      c.touch_owner.erase(own);
+      own = c.touch_owner.end();
+    }
     if (own != c.touch_owner.end()) {
       if (own->second == id) return &t;
       continue;
     }
-    if (in_rect(t.down_pos, a, b)) {
+    // Claimed only at the moment of touch-down: a resting finger never "presses" a widget that appears under it.
+    if (t.just_down && in_rect(t.down_pos, a, b)) {
       c.touch_owner.emplace_back(t.id, id);
       return &t;
     }

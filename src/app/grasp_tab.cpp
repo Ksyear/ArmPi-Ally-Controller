@@ -133,7 +133,12 @@ void GuiApp::grasp_frame(double now) {
   }
   // Dead-man: A (or the on-screen hold button) on the grasp tab, window focused, and the user is not driving or moving
   // the arm themselves (that takes over and pauses the automation).
-  const bool deadman = on_tab && focused_ && !calib_mode_ && !user_active_ && (last_pad_.down(input::kA) || grasp_hold_touch_);
+  // Nothing resumes by itself: after the gate closes (focus, tab, calibration, user input) A must be released once.
+  const bool raw = last_pad_.down(input::kA) || grasp_hold_touch_;
+  const bool gate = on_tab && focused_ && !calib_mode_ && !user_active_;
+  if (!gate) grasp_armed_ = false;
+  else if (!raw) grasp_armed_ = true;
+  const bool deadman = gate && grasp_armed_ && raw;
   grasp_->tick(now, deadman);
   const auto& st = grasp_->status();
   if (st.done_events > grasp_done_seen_) {

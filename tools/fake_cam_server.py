@@ -106,6 +106,8 @@ class Scene:
             ox = math.cos(rth) * dx + math.sin(rth) * dy
             oy = -math.sin(rth) * dx + math.cos(rth) * dy
             cu, cv = to_pixel(ox, oy)
+            if not (math.isfinite(cu) and math.isfinite(cv)) or abs(cu) > 1e5 or abs(cv) > 1e5:
+                continue
             half = SIZES[o["shape"]] * PX_PER_M / 2.0
             r, g, b = COLORS[o["color"]]
             for v in range(max(0, int(cv - half) - 1), min(H, int(cv + half) + 2)):
@@ -215,15 +217,19 @@ def follow_robot(host, port, scene):
                         continue
                     try:
                         msg = json.loads(payload)
-                        if msg.get("topic") != "/armpi/status":
+                        if not isinstance(msg, dict) or msg.get("topic") != "/armpi/status":
                             continue
                         st = json.loads(msg["msg"]["data"])
-                        od, cmd = st.get("odom") or {}, st.get("base_cmd") or {}
-                        scene.set_pose((float(od.get("x", 0)), float(od.get("y", 0)), float(od.get("yaw", 0))),
-                                       (float(cmd.get("vx", 0)), float(cmd.get("vy", 0)), float(cmd.get("wz", 0))))
-                    except (ValueError, KeyError, TypeError):
+                        od, cmd = st.get("odom"), st.get("base_cmd")
+                        if not isinstance(od, dict) or not isinstance(cmd, dict):
+                            continue
+                        pose = tuple(float(od.get(k, 0)) for k in ("x", "y", "yaw"))
+                        vel = tuple(float(cmd.get(k, 0)) for k in ("vx", "vy", "wz"))
+                        if all(math.isfinite(v) and abs(v) < 1e3 for v in pose + vel):
+                            scene.set_pose(pose, vel)
+                    except (ValueError, KeyError, TypeError, AttributeError):
                         continue
-        except OSError:
+        except Exception:  # keep following whatever goes wrong with the connection or the data
             time.sleep(1.0)
 
 

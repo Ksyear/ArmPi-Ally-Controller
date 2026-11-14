@@ -8,6 +8,7 @@
 #include "common/util.hpp"
 #include "input/mapper.hpp"
 #include "input/pad.hpp"
+#include "input/tilt.hpp"
 #include "net/crypto.hpp"
 #include "net/discovery.hpp"
 #include "net/http.hpp"
@@ -247,12 +248,43 @@ static void test_util() {
   CHECK(parse_double("1.5") && !parse_double("x"));
 }
 
+static void test_tilt() {
+  using input::Gravity;
+  // upright, facing the user: pitch 0; screen up on a table: pitch 90; right side down: roll +
+  CHECK(std::fabs(input::tilt_pitch_deg(Gravity{0, -1, 0})) < 1e-9);
+  CHECK(std::fabs(input::tilt_pitch_deg(Gravity{0, 0, -1}) - 90.0) < 1e-9);
+  CHECK(std::fabs(input::tilt_roll_deg(Gravity{0, -1, 0})) < 1e-9);
+  CHECK(input::tilt_roll_deg(Gravity{0.5, -0.86, 0}) > 25.0);
+  // deadband, proportional band, saturation, signs
+  auto d = input::tilt_to_drive(40, 10, 38, 8, 5, 25);  // 2 degrees each: inside the deadband
+  CHECK(d.forward == 0.0 && d.turn == 0.0);
+  d = input::tilt_to_drive(53, 0, 38, 0, 5, 25);  // 15 degrees forward: half way
+  CHECK(std::fabs(d.forward - 0.5) < 1e-9 && d.turn == 0.0);
+  d = input::tilt_to_drive(38, 40, 38, 0, 5, 25);  // right side far down: full clockwise (negative) turn
+  CHECK(d.turn == -1.0 && d.forward == 0.0);
+  d = input::tilt_to_drive(20, -20, 38, 0, 5, 25);  // tipped back + left side down
+  CHECK(d.forward < 0 && d.turn > 0);
+  d = input::tilt_to_drive(-179, 0, 179, 0, 5, 25);  // reference near +-180: wraps instead of jumping
+  CHECK(std::fabs(d.forward) < 1e-9);
+  d = input::tilt_to_drive(std::nan(""), 0, 0, 0, 5, 25);
+  CHECK(d.forward == 0.0);
+  d = input::tilt_to_drive(40, 40, 0, 0, 5, std::nan(""));  // a broken setting never means full speed
+  CHECK(d.forward == 0.0 && d.turn == 0.0);
+  // Held at 45 degrees, then turned 45 degrees like a steering wheel (about the screen normal): turn only.
+  const double c = std::cos(0.785398), s45 = std::sin(0.785398), a = 0.785398;
+  const Gravity held{0, -c, -s45}, steered{c * std::sin(a), -c * std::cos(a), -s45};
+  d = input::tilt_to_drive(input::tilt_pitch_deg(steered), input::tilt_roll_deg(steered), input::tilt_pitch_deg(held),
+                           input::tilt_roll_deg(held), 5, 25);
+  CHECK(std::fabs(d.forward) < 1e-9 && d.turn < -0.5);
+}
+
 int main() {
   const std::vector<std::pair<const char*, std::function<void()>>> tests = {
       {"crypto", test_crypto},           {"websocket_frames", test_websocket_frames},
       {"discovery_http", test_discovery_and_http}, {"rosbridge_parse", test_rosbridge_parse},
       {"mapper", test_mapper},           {"pad_haptics", test_pad_and_haptics},
       {"util", test_util},               {"security_limits", test_security_limits},
+      {"tilt", test_tilt},
   };
   for (const auto& [name, fn] : tests) {
     const int before = g_fail;

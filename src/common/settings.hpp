@@ -29,6 +29,8 @@ struct Settings {
   int autograsp_retry{0};        // 0..2 automatic re-tries after a failed pick
   bool autograsp_base{false};      // experimental: drive the base towards out-of-reach objects (speed limit <= 30 %)
   bool autograsp_intrusion{false}; // experimental: pause when something large enters the work area (fixed camera)
+  bool tilt_drive{false};          // drive by tilting the handheld while RT is held
+  float tilt_full_deg{25.0f};      // tilt for full speed (deadband 5 degrees)
 };
 
 std::string settings_dir();   // created if missing (UTF-8 path)
