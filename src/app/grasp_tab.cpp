@@ -87,6 +87,8 @@ void GuiApp::start_grasp() {
   robot::GraspOptions o;
   o.confirm_before_descend = settings_.autograsp_confirm;
   o.max_retries = settings_.autograsp_retry;
+  o.base_approach = settings_.autograsp_base;
+  o.intrusion_check = settings_.autograsp_intrusion;
   grasp_ = std::make_unique<robot::GraspSequencer>(
       *grasp_robot_,
       robot::GraspVision{[this] { return vision_.latest(); }, [this] { return vision_.detector().classes(); }}, log_, o);
@@ -116,9 +118,12 @@ void GuiApp::grasp_frame(double now) {
   }
   if (!grasp_) return;
   robot::GraspOptions o = grasp_->options();
-  if (o.confirm_before_descend != settings_.autograsp_confirm || o.max_retries != settings_.autograsp_retry) {
+  if (o.confirm_before_descend != settings_.autograsp_confirm || o.max_retries != settings_.autograsp_retry ||
+      o.base_approach != settings_.autograsp_base || o.intrusion_check != settings_.autograsp_intrusion) {
     o.confirm_before_descend = settings_.autograsp_confirm;
     o.max_retries = settings_.autograsp_retry;
+    o.base_approach = settings_.autograsp_base;
+    o.intrusion_check = settings_.autograsp_intrusion;
     grasp_->set_options(o);
   }
   // Screenshot helper: select the first detection (selection only; nothing moves without the dead-man).
@@ -126,10 +131,9 @@ void GuiApp::grasp_frame(double now) {
     const auto ds = vision_.latest();
     if (ds && !ds->items.empty() && grasp_->select(ds->items.front().track_id, now)) demo_state_done_ = true;
   }
-  // Dead-man: A (or the on-screen hold button) on the grasp tab, window focused, not driving the base.
-  const auto snap = core_->snapshot();
-  const bool driving = std::fabs(snap.applied_f) + std::fabs(snap.applied_s) + std::fabs(snap.applied_t) > 1e-3;
-  const bool deadman = on_tab && focused_ && !calib_mode_ && !driving && (last_pad_.down(input::kA) || grasp_hold_touch_);
+  // Dead-man: A (or the on-screen hold button) on the grasp tab, window focused, and the user is not driving or moving
+  // the arm themselves (that takes over and pauses the automation).
+  const bool deadman = on_tab && focused_ && !calib_mode_ && !user_active_ && (last_pad_.down(input::kA) || grasp_hold_touch_);
   grasp_->tick(now, deadman);
   const auto& st = grasp_->status();
   if (st.done_events > grasp_done_seen_) {
@@ -173,10 +177,46 @@ void GuiApp::grasp_pad(uint16_t pressed) {
 
 void GuiApp::grasp_pick(float u, float v, double now) {
   if (!core_) return;
+  if (color_pick_mode_) {
+    // Sample the colour around the tap from the newest frame (one-off conversion on the UI thread).
+    const auto f = core_->camera().latest(0);
+    if (!f || f->width <= 0 || f->height <= 0) return;
+    const auto hsv = vision::rgba_to_hsv_downscaled(f->rgba.data(), f->width, f->height, 2);
+    const int cx = std::clamp(static_cast<int>(u / 2), 0, std::max(0, hsv.w - 1));
+    const int cy = std::clamp(static_cast<int>(v / 2), 0, std::max(0, hsv.h - 1));
+    color_sample_ = vision::sample_range(hsv, cx, cy, 5);
+    unsigned r = 0, g = 0, b = 0, n = 0;
+    for (int y = std::max(0, static_cast<int>(v) - 4); y <= std::min(f->height - 1, static_cast<int>(v) + 4); ++y)
+      for (int x = std::max(0, static_cast<int>(u) - 4); x <= std::min(f->width - 1, static_cast<int>(u) + 4); ++x) {
+        const uint8_t* p = &f->rgba[(static_cast<size_t>(y) * f->width + x) * 4];
+        r += p[0];
+        g += p[1];
+        b += p[2];
+        ++n;
+      }
+    if (n) color_sample_rgb_ = ((r / n) << 16) | ((g / n) << 8) | (b / n);
+    return;
+  }
   if (calib_mode_) {
-    if (calib_step_ != 2) return;
+    if (calib_step_ != 2 && calib_step_ != 3) return;
     if (dist3(core_->snapshot().target, calib_edit_.observe_pose) > 0.01) {
       notify("먼저 '관측 자세로 이동' — 표시는 관측 자세의 영상에서 누릅니다", Status::kWarn, 3.0);
+      return;
+    }
+    if (calib_step_ == 3) {
+      if (parallax_stage_ == 0) {
+        par_u0_ = u;
+        par_v0_ = v;
+        parallax_stage_ = 1;
+      } else if (parallax_stage_ == 1) {
+        std::string err;
+        if (calib_edit_.measure_parallax(par_u0_, par_v0_, u, v, parallax_h_, &err)) {
+          parallax_stage_ = 2;
+        } else {
+          notify(err, Status::kWarn, 3.0);
+          parallax_stage_ = 0;
+        }
+      }
       return;
     }
     calib_tap_set_ = true;
@@ -289,7 +329,12 @@ void GuiApp::draw_grasp_overlay(ImDrawList* dl, ImVec2 p0, ImVec2 p1) {
       const std::string n = std::to_string(i++);
       w::text_center(dl, m, F().semibold, fs::micro, col::accentInk, n.c_str());
     }
-    if (calib_tap_set_) {
+    if (calib_step_ == 3 && parallax_stage_ >= 1) {
+      const ImVec2 m = to_screen(par_u0_, par_v0_);
+      dl->AddCircle(m, S(12), col::info, 24, S(2));
+      w::osd_text(dl, ImVec2(m.x + S(14), m.y - S(10)), F().semibold, fs::micro, col::info, "표시");
+    }
+    if (calib_tap_set_ && calib_step_ == 2) {
       const ImVec2 m = to_screen(calib_tap_u_, calib_tap_v_);
       dl->AddCircle(m, S(16), col::accent, 28, S(2));
       dl->AddLine(ImVec2(m.x - S(24), m.y), ImVec2(m.x + S(24), m.y), col::accent, S(2));
@@ -415,7 +460,10 @@ void GuiApp::draw_tab_grasp(ImVec2 size) {
       calib_edit_.points.clear();
       calib_edit_.H = vision::Homography{};
       calib_edit_.res = vision::Residual{};
+      calib_edit_.parallax_x = calib_edit_.parallax_y = 0.0;
       calib_tap_set_ = false;
+      parallax_stage_ = 0;
+      color_pick_mode_ = false;
     }
     ImGui::SameLine(0, S(sp::s3));
     ImGui::BeginGroup();
@@ -426,12 +474,118 @@ void GuiApp::draw_tab_grasp(ImVec2 size) {
     ImGui::EndGroup();
   }
   w::end_card();
+  ImGui::Dummy(ImVec2(0, S(sp::s2)));
+  draw_grasp_colors(wdt);
   // options
   ImGui::Checkbox("하강 전에 한 번 더 확인(권장)", &settings_.autograsp_confirm);
   bool retry = settings_.autograsp_retry > 0;
   if (ImGui::Checkbox("못 집으면 한 번 더 시도", &retry)) settings_.autograsp_retry = retry ? 1 : 0;
+  ImGui::Checkbox("[시험] 물체가 멀면 차체로 다가가기", &settings_.autograsp_base);
+  if (settings_.autograsp_base)
+    wrapped(snap.speed > 0.30 + 1e-9 ? "속도 상한을 30 % 이하로 내려야 동작합니다(지금 " + strf("%.0f", snap.speed * 100) + " %)."
+                                     : "바퀴를 띄운 상태에서 먼저 확인하세요. 한 번에 2초, 모두 20초까지 아주 느리게 움직입니다.",
+            snap.speed > 0.30 + 1e-9 ? col::warn : col::text3, fs::micro);
+  ImGui::Checkbox("[시험] 작업 영역 침입 감지(차체 고정 카메라)", &settings_.autograsp_intrusion);
+  if (st.base_moving || st.approach_used_s > 0)
+    wrapped(strf("차체 접근: %.1f / %.0f초 사용", st.approach_used_s, grasp_->options().approach_total_s), col::text3, fs::micro);
   if (!grasp_hint_.empty()) wrapped(grasp_hint_, col::text3, fs::micro);
-  (void)snap;
+}
+
+// Colour dictionary: re-sample a colour group (both the block and the ball of that colour) from the live image.
+void GuiApp::apply_color(const std::string& group) {
+  if (!color_sample_) return;
+  auto classes = vision_.detector().classes();
+  int changed = 0;
+  for (auto& c : classes) {
+    const std::string g = c.name.substr(0, c.name.find(' '));
+    if (g == group) {
+      c.color = *color_sample_;
+      ++changed;
+    }
+  }
+  if (!changed) return;
+  vision_.detector().set_classes(classes);
+  color_sample_.reset();
+  color_pick_mode_ = false;
+  if (!demo_host_.empty()) {
+    notify(group + " 색을 바꿈(데모 실행이라 저장하지 않음)", Status::kIdle);
+    return;
+  }
+  std::string err;
+  if (write_text_file_atomic(settings_dir() + "/vision_colors.json", vision::classes_to_json(classes), &err)) {
+    log_.ok("물체 색 사전 저장: " + group);
+    notify(group + " 색을 다시 찍어 저장함", Status::kOk);
+  } else {
+    notify("색 사전 저장 실패: " + err, Status::kDanger, 4.0);
+  }
+}
+
+void GuiApp::draw_grasp_colors(float wdt) {
+  const auto classes = vision_.detector().classes();
+  // colour groups = first word of the class names ("빨간 블록", "빨간 공" -> "빨간")
+  std::vector<std::pair<std::string, uint32_t>> groups;
+  for (const auto& c : classes) {
+    const std::string g = c.name.substr(0, c.name.find(' '));
+    if (std::none_of(groups.begin(), groups.end(), [&](const auto& p) { return p.first == g; }))
+      groups.emplace_back(g, vision::class_display_rgb(c));
+  }
+  const float h = color_pick_mode_ ? S(236) : S(140);
+  if (w::begin_card("colors", nullptr, ImVec2(wdt, h))) {
+    w::card_title("물체 색", color_pick_mode_ ? "영상에서 물체를 누르세요" : "조명이 바뀌면 다시 찍기", color_pick_mode_ ? col::warn : col::text3);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float cw = ImGui::GetContentRegionAvail().x;
+    if (!color_pick_mode_) {
+      {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        float x = p.x;
+        for (const auto& g : groups) {
+          dl->AddCircleFilled(ImVec2(x + S(9), p.y + S(12)), S(8), rgb_u32(g.second), 16);
+          w::text(dl, ImVec2(x + S(22), p.y), F().regular, fs::micro, col::text2, g.first.c_str());
+          x += S(22) + w::text_size(F().regular, fs::micro, g.first.c_str()).x + S(sp::s4);
+        }
+        ImGui::Dummy(ImVec2(cw, S(26)));
+      }
+      const float bw = (cw - S(sp::s3)) * 0.5f;
+      if (w::button("cpick", "색 다시 찍기", ImVec2(bw, S(52)), w::Variant::kDefault, icon::kCrosshair, grasp_ && !grasp_->active())) {
+        color_pick_mode_ = true;
+        color_sample_.reset();
+      }
+      ImGui::SameLine(0, S(sp::s3));
+      if (w::button("cdef", "기본 색으로", ImVec2(bw, S(52)), w::Variant::kGhost, icon::kRefreshCw)) {
+        vision_.detector().set_classes(vision::default_classes());
+        std::string err;
+        if (demo_host_.empty()) write_text_file_atomic(settings_dir() + "/vision_colors.json", vision::classes_to_json(vision::default_classes()), &err);
+        notify("물체 색을 기본값으로", Status::kIdle);
+      }
+    } else {
+      if (color_sample_) {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(p, ImVec2(p.x + S(44), p.y + S(44)), rgb_u32(color_sample_rgb_), S(sp::radiusS));
+        dl->AddRect(p, ImVec2(p.x + S(44), p.y + S(44)), col::border2, S(sp::radiusS), 0, S(1));
+        const auto& r = *color_sample_;
+        w::text(dl, ImVec2(p.x + S(56), p.y + S(2)), F().regular, fs::micro, col::text2,
+                strf("색상 %.0f–%.0f°  채도 %.2f↑  밝기 %.2f↑", r.h_lo, r.h_hi, r.s_lo, r.v_lo).c_str());
+        w::text(dl, ImVec2(p.x + S(56), p.y + S(24)), F().regular, fs::micro, col::text3, "어느 색으로 쓸까요?");
+        ImGui::Dummy(ImVec2(cw, S(50)));
+        const int n = static_cast<int>(groups.size());
+        const float gb = n > 0 ? (cw - (n - 1) * S(sp::s2)) / n : cw;
+        for (int i = 0; i < n; ++i) {
+          if (i) ImGui::SameLine(0, S(sp::s2));
+          ImGui::PushID(i);
+          if (w::button("g", groups[static_cast<size_t>(i)].first.c_str(), ImVec2(gb, S(52)))) apply_color(groups[static_cast<size_t>(i)].first);
+          ImGui::PopID();
+        }
+      } else {
+        wrapped("색을 바꿀 물체를 영상에서 누르세요. 물체 가운데의 색을 잽니다.", col::text2, fs::label);
+        ImGui::Dummy(ImVec2(cw, S(64)));
+      }
+      if (w::button("ccancel", "취소", ImVec2(S(160), S(48)), w::Variant::kGhost, icon::kX)) {
+        color_pick_mode_ = false;
+        color_sample_.reset();
+      }
+    }
+  }
+  w::end_card();
 }
 
 void GuiApp::draw_grasp_candidates(float wdt) {
@@ -502,9 +656,10 @@ void GuiApp::draw_grasp_candidates(float wdt) {
 void GuiApp::draw_grasp_calibration(float wdt) {
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const auto snap = core_->snapshot();
-  const char* titles[] = {"1/4 관측 자세", "2/4 책상 높이", "3/4 대응점", "4/4 확인·저장"};
-  const char* labels[] = {"관측", "높이", "점", "저장"};
-  w::stepper("csteps", labels, 4, calib_step_, -1, ImVec2(wdt, S(40)));
+  const char* titles[] = {"1/5 관측 자세", "2/5 책상 높이", "3/5 대응점", "4/5 물체 높이 보정(선택)", "5/5 확인·저장"};
+  const char* labels[] = {"관측", "책상", "점", "기울기", "저장"};
+  calib_step_ = std::clamp(calib_step_, 0, 4);
+  w::stepper("csteps", labels, 5, calib_step_, -1, ImVec2(wdt, S(40)));
   const float bw = (wdt - S(sp::s3)) * 0.5f;
   if (w::begin_card("cal", titles[calib_step_], ImVec2(wdt, S(400)))) {
     const float cw = ImGui::GetContentRegionAvail().x;
@@ -565,8 +720,10 @@ void GuiApp::draw_grasp_calibration(float wdt) {
           if (calib_edit_.points.size() >= 4) calib_edit_.refit(&err);
         }
         ImGui::SameLine(0, S(sp::s3));
-        if (w::button("next", "다음", ImVec2(hb, S(56)), w::Variant::kPrimary, icon::kChevronRight, calib_edit_.H.valid))
+        if (w::button("next", "다음", ImVec2(hb, S(56)), w::Variant::kPrimary, icon::kChevronRight, calib_edit_.H.valid)) {
           calib_step_ = 3;
+          parallax_stage_ = 0;
+        }
         w::text(dl, ImGui::GetCursorScreenPos(), F().regular, fs::micro, col::text2,
                 strf("찍은 점 %d개%s", static_cast<int>(calib_edit_.points.size()),
                      calib_edit_.H.valid ? strf(" · 잔차 %.1f mm", calib_edit_.res.rms_m * 1000).c_str() : " (4개 이상 필요)")
@@ -575,6 +732,48 @@ void GuiApp::draw_grasp_calibration(float wdt) {
         break;
       }
       case 3: {
+        const bool at_obs = dist3(snap.target, calib_edit_.observe_pose) <= 0.01;
+        const char* guide = !at_obs                ? "먼저 '관측 자세로 이동'을 누르세요."
+                            : parallax_stage_ == 0 ? "카메라가 비스듬하면 물체 높이만큼 위치가 밀립니다. 책상 위 표시 하나를 영상에서 누르세요."
+                            : parallax_stage_ == 1 ? "그 표시 위에 블록을 올리고, 블록 윗면 가운데를 영상에서 누르세요."
+                                                   : "측정했습니다. 다음으로 넘어가세요.";
+        wrapped(guide, col::text2, fs::label);
+        // block height used for the measurement
+        {
+          const ImVec2 p = ImGui::GetCursorScreenPos();
+          w::text(dl, ImVec2(p.x, p.y + S(12)), F().regular, fs::label, col::text2, "블록 높이");
+          ImGui::SetCursorScreenPos(ImVec2(p.x + S(130), p.y));
+          if (w::button("hm", "", ImVec2(S(44), S(44)), w::Variant::kDefault, icon::kMinus)) parallax_h_ = std::max(0.01f, parallax_h_ - 0.005f);
+          ImGui::SameLine(0, S(sp::s2));
+          const ImVec2 vp = ImGui::GetCursorScreenPos();
+          ImGui::Dummy(ImVec2(S(96), S(44)));
+          const std::string hv = strf("%.1f cm", parallax_h_ * 100);
+          const ImVec2 hs = w::text_size(F().mono, fs::label, hv.c_str());
+          w::text(dl, ImVec2(vp.x + (S(96) - hs.x) * 0.5f, vp.y + (S(44) - hs.y) * 0.5f), F().mono, fs::label, col::text1, hv.c_str());
+          ImGui::SameLine(0, S(sp::s2));
+          if (w::button("hp", "", ImVec2(S(44), S(44)), w::Variant::kDefault, icon::kPlus)) parallax_h_ = std::min(0.15f, parallax_h_ + 0.005f);
+        }
+        if (parallax_stage_ == 2 || std::hypot(calib_edit_.parallax_x, calib_edit_.parallax_y) > 1e-9) {
+          const double mag = std::hypot(calib_edit_.parallax_x, calib_edit_.parallax_y);
+          w::text(dl, ImGui::GetCursorScreenPos(), F().regular, fs::micro, col::ok,
+                  strf("높이 3 cm 물체의 밀림 %.1f mm 보정(카메라 내려보는 각 약 %.0f°)", mag * 0.015 * 1000,
+                       mag > 1e-6 ? std::atan(1.0 / mag) * 180.0 / 3.14159265 : 90.0)
+                      .c_str());
+          ImGui::Dummy(ImVec2(cw, S(24)));
+        }
+        if (w::button("goobs2", "관측 자세로 이동", ImVec2(hb, S(56)), at_obs ? w::Variant::kDefault : w::Variant::kPrimary, icon::kHouse))
+          core_->arm_goto(pose_target(calib_edit_.observe_pose, snap.target.gripper));
+        ImGui::SameLine(0, S(sp::s3));
+        if (w::button("pagain", "다시 재기", ImVec2(hb, S(56)), w::Variant::kDefault, icon::kRefreshCw, parallax_stage_ > 0)) {
+          parallax_stage_ = 0;
+          calib_edit_.parallax_x = calib_edit_.parallax_y = 0.0;
+        }
+        if (w::button("pnext", parallax_stage_ == 2 ? "다음" : "건너뛰기", ImVec2(hb, S(56)),
+                      parallax_stage_ == 2 ? w::Variant::kPrimary : w::Variant::kGhost, icon::kChevronRight))
+          calib_step_ = 4;
+        break;
+      }
+      case 4: {
         const float tw = (cw - S(sp::s3)) * 0.5f;
         const bool big = calib_edit_.res.rms_m > 0.008;
         w::number_tile("잔차(책상)", strf("%.1f", calib_edit_.res.rms_m * 1000).c_str(), "mm", ImVec2(tw, S(84)),

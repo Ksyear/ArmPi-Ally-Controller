@@ -295,6 +295,9 @@ void GuiApp::handle_input(double now) {
   }
 
   const auto r = mapper_.map(pad, k, touch_, now, focused_);
+  user_active_ = std::fabs(r.input.forward) > 1e-3 || std::fabs(r.input.strafe) > 1e-3 || std::fabs(r.input.turn) > 1e-3 ||
+                 r.arm_hold;
+  for (double v : r.input.arm) user_active_ = user_active_ || std::fabs(v) > 1e-3;
   const uint16_t pressed = static_cast<uint16_t>(pad.buttons & ~prev_buttons_);
   prev_buttons_ = pad.buttons;
   // Grasp tab: the D-pad picks candidates / fine-tunes the grasp point instead of speed and arm steps.
@@ -386,6 +389,8 @@ void GuiApp::frame(double now) {
   c.now = now;
   c.dt = std::max(1e-4f, io.DeltaTime);
   ImGui::GetStyle().FontScaleMain = c.text_scale;
+  c.touches = plat_.touches ? plat_.touches() : std::vector<TouchPoint>{};
+  w::touch_new_frame();
 
   if (demo_pending_) {
     demo_pending_ = false;
@@ -696,6 +701,7 @@ void GuiApp::draw_safety_column(ImVec2 p0, ImVec2 size) {
   const float bw = S(192);
   const float x = p0.x + (size.x - bw) * 0.5f;
   float y = p0.y;
+  touch_targets_[1] = ImVec2(x + bw * 0.5f, y + bw * 0.5f);
   ImGui::SetCursorScreenPos(ImVec2(x, y));
   const w::EstopVisual v = !core_ ? w::EstopVisual::kDisabled : latched ? w::EstopVisual::kLatched : w::EstopVisual::kReady;
   // Even when latched the button stays live: pressing again re-sends the stop.
@@ -755,6 +761,7 @@ void GuiApp::draw_bottom_bar(ImVec2 p0, ImVec2 size) {
 
   // virtual stick (drive)
   const float r = S(100);
+  touch_targets_[0] = ImVec2(p0.x + S(36) + r, cy);
   ImGui::SetCursorScreenPos(ImVec2(p0.x + S(36), cy - r));
   w::virtual_stick("drive_stick", r, &touch_.stick_x, &touch_.stick_y);
   w::text_center(dl, ImVec2(p0.x + S(36) + r, cy + r + S(16)), F().regular, fs::micro, col::text3, "주행");
@@ -766,8 +773,15 @@ void GuiApp::draw_bottom_bar(ImVec2 p0, ImVec2 size) {
   w::text(dl, ImVec2(sx0 + sw - S(28), cy - S(70)), F().regular, fs::label, col::text3, icon::kRotateCw);
   ImGui::SetCursorScreenPos(ImVec2(sx0, cy - S(28)));
   ImGui::InvisibleButton("turn", ImVec2(sw, S(56)));
-  const bool turning = ImGui::IsItemActive();
-  touch_.turn = turning ? clampd((ImGui::GetIO().MousePos.x - (sx0 + sw * 0.5f)) / (sw * 0.5f - S(28)), -1, 1) : 0.0f;
+  bool turning = ImGui::IsItemActive();
+  float turn_x = ImGui::GetIO().MousePos.x;
+  if (!turning) {
+    if (const TouchPoint* tp = w::touch_claim(ImGui::GetItemID(), ImVec2(sx0, cy - S(28)), ImVec2(sx0 + sw, cy + S(28)))) {
+      turning = true;
+      turn_x = tp->pos.x;
+    }
+  }
+  touch_.turn = turning ? clampd((turn_x - (sx0 + sw * 0.5f)) / (sw * 0.5f - S(28)), -1, 1) : 0.0f;
   dl->AddRectFilled(ImVec2(sx0, cy - S(8)), ImVec2(sx0 + sw, cy + S(8)), col::border2, S(8));
   dl->AddCircleFilled(ImVec2(sx0 + sw * 0.5f + touch_.turn * (sw * 0.5f - S(28)), cy), S(28), turning ? col::accent : col::text2, 40);
 

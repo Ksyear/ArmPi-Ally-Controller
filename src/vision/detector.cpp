@@ -61,6 +61,20 @@ DetectionSet Detector::detect_rgba(const uint8_t* rgba, int w, int h, const Dete
   const std::vector<ObjectClass> cls = classes();
   const int sc = std::max(1, p_.scale);
   const HsvImage hsv = rgba_to_hsv_downscaled(rgba, w, h, sc);
+  // brightness thumbnail at 1/8 of the original size
+  {
+    const int k = std::max(1, 8 / sc);
+    ds.gw = hsv.w / k;
+    ds.gh = hsv.h / k;
+    ds.gray.assign(static_cast<size_t>(ds.gw) * static_cast<size_t>(ds.gh), 0);
+    for (int y = 0; y < ds.gh; ++y)
+      for (int x = 0; x < ds.gw; ++x) {
+        unsigned sum = 0;
+        for (int dy = 0; dy < k; ++dy)
+          for (int dx = 0; dx < k; ++dx) sum += hsv.v[static_cast<size_t>(y * k + dy) * hsv.w + static_cast<size_t>(x * k + dx)];
+        ds.gray[static_cast<size_t>(y) * ds.gw + x] = static_cast<uint8_t>(sum / static_cast<unsigned>(k * k));
+      }
+  }
   const int min_area = std::max(4, p_.min_area_px / (sc * sc));
   std::vector<Detection> found;
   for (size_t ci = 0; ci < cls.size(); ++ci) {

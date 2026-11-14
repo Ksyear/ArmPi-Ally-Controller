@@ -18,6 +18,7 @@ constexpr double kNudgeMaxM = 0.03;
 bool is_motion(GraspState s) {
   switch (s) {
     case GraspState::kObserve:
+    case GraspState::kApproachBase:
     case GraspState::kOpenGripper:
     case GraspState::kHover:
     case GraspState::kDescend:
@@ -55,6 +56,7 @@ const char* to_string_ko(GraspState s) {
     case GraspState::kSelected: return "선택됨";
     case GraspState::kObserve: return "관측";
     case GraspState::kPlan: return "계획";
+    case GraspState::kApproachBase: return "차체 접근";
     case GraspState::kConfirm: return "하강 전 확인";
     case GraspState::kOpenGripper: return "집게 열기";
     case GraspState::kHover: return "물체 위로";
@@ -74,6 +76,7 @@ int grasp_step_index(GraspState s) {
   switch (s) {
     case GraspState::kObserve: return 0;
     case GraspState::kPlan:
+    case GraspState::kApproachBase:
     case GraspState::kConfirm: return 1;
     case GraspState::kOpenGripper: return 2;
     case GraspState::kHover: return 3;
@@ -195,8 +198,14 @@ void GraspSequencer::enter(GraspState s, double now, const std::string& msg) {
   }
 }
 
+void GraspSequencer::stop_base() {
+  robot_.set_auto_base(0.0, 0.0, 0.0);
+  st_.base_moving = false;
+}
+
 void GraspSequencer::fail(double now, const std::string& why) {
   robot_.cancel_goal();
+  stop_base();
   st_.failed_state = st_.state == GraspState::kPaused ? st_.resume_state : st_.state;
   ++st_.fail_events;
   log_.warn("집기 실패: " + why);
@@ -205,6 +214,7 @@ void GraspSequencer::fail(double now, const std::string& why) {
 
 void GraspSequencer::pause(double now, const std::string& why) {
   robot_.cancel_goal();
+  stop_base();
   if (st_.state != GraspState::kPaused) st_.resume_state = st_.state;
   enter(GraspState::kPaused, now, why + " — A를 다시 누르면 이어서 합니다");
 }
@@ -274,7 +284,10 @@ void GraspSequencer::clear_selection() {
 }
 
 void GraspSequencer::cancel() {
-  if (active()) robot_.cancel_goal();
+  if (active()) {
+    robot_.cancel_goal();
+    stop_base();
+  }
   const uint64_t done = st_.done_events, failed = st_.fail_events;
   st_ = GraspStatus{};
   st_.done_events = done;
@@ -457,7 +470,15 @@ void GraspSequencer::step_observe(double now, const CoreSnapshot& s) {
         }
       if (n != 1) d = nullptr;
     }
-    if (d) samples_.emplace_back(d->u, d->v);
+    if (d) {
+      samples_.emplace_back(d->u, d->v);
+      sel_area_ = d->area_px;
+      if (ds->gw > 0 && ds->gray.size() == static_cast<size_t>(ds->gw) * static_cast<size_t>(ds->gh)) {
+        ref_gray_ = ds->gray;  // work-area reference: the scene at the observe pose, arm parked
+        ref_gw_ = ds->gw;
+        ref_gh_ = ds->gh;
+      }
+    }
   }
   const bool enough = static_cast<int>(samples_.size()) >= std::max(1, opt_.observe_frames);
   const bool late = now - reached_at_ > opt_.observe_s + kObserveSettleS;
@@ -484,12 +505,31 @@ void GraspSequencer::step_plan(double now) {
     return;
   }
   std::string err;
-  const auto p = planner_.plan(calib_, st_.orig_u, st_.orig_v, cls[static_cast<size_t>(st_.class_index)], &err);
+  const auto& oc = cls[static_cast<size_t>(st_.class_index)];
+  const auto p = planner_.plan(calib_, st_.orig_u, st_.orig_v, oc, &err);
   if (!p) {
-    fail(now, err);
+    double x = 0, y = 0;
+    const bool located = calib_.z_table.has_value() && calib_.pixel_to_table(st_.orig_u, st_.orig_v, oc.size_m, &x, &y);
+    if (!opt_.base_approach || !located) {
+      fail(now, err);
+      return;
+    }
+    if (robot_.snapshot().speed > 0.30 + 1e-9) {
+      fail(now, "물체가 팔 범위 밖입니다. 차체 자동 접근은 속도 상한 30 % 이하에서만 합니다");
+      return;
+    }
+    if (st_.approach_used_s >= opt_.approach_total_s) {
+      fail(now, strf("차체 접근 시간(%.0f초)을 다 썼습니다 — 차체를 직접 옮기세요", opt_.approach_total_s));
+      return;
+    }
+    log_.info(strf("집기: 물체가 팔 범위 밖(x %.1f cm, y %.1f cm) — 차체 접근", x * 100, y * 100));
+    enter(GraspState::kApproachBase, now, "물체 쪽으로 차체를 천천히 움직입니다");
+    burst_start_ = last_frame_at_ = last_cmd_at_ = now;
+    settle_until_ = lost_since_ = -1;
     return;
   }
   st_.plan = p;
+  st_.intrusion_watch = opt_.intrusion_check && !ref_gray_.empty();
   base_plan_ = p;
   nudge_x_ = nudge_y_ = nudge_z_ = 0.0;
   if (opt_.confirm_before_descend) {
@@ -537,6 +577,156 @@ void GraspSequencer::step_verify(double now, const CoreSnapshot& s) {
   fail(now, "집지 못함 — 물체가 제자리에 있습니다");
 }
 
+void GraspSequencer::step_approach(double now, const CoreSnapshot& s) {
+  (void)s;
+  if (st_.base_moving && last_cmd_at_ >= 0) st_.approach_used_s += now - last_cmd_at_;
+  last_cmd_at_ = now;
+  if (st_.approach_used_s > opt_.approach_total_s) {
+    fail(now, strf("차체 접근 시간 초과(%.0f초) — 차체를 직접 옮기세요", opt_.approach_total_s));
+    return;
+  }
+  if (settle_until_ >= 0) {  // stop-and-look pause between bursts
+    if (now < settle_until_) return;
+    settle_until_ = -1;
+    burst_start_ = now;
+  }
+  const auto ds = vision_.latest ? vision_.latest() : nullptr;
+  if (!ds || ds->frame_seq == last_seq_) {
+    if (now - last_frame_at_ > 2.0) fail(now, "차체 접근 중 카메라 영상이 끊김");
+    else if (now - last_frame_at_ > 0.5) stop_base();
+    return;
+  }
+  last_seq_ = ds->frame_seq;
+  last_frame_at_ = now;
+  // Base motion shifts the object in the image: look further than usual, or take the only one of that class.
+  const vision::Detection* d = find_near(*ds, st_.class_index, st_.sel_u, st_.sel_v, 2.0f * kTrackRadiusPx);
+  if (!d) {
+    int n = 0;
+    for (const auto& it : ds->items)
+      if (it.class_index == st_.class_index) {
+        ++n;
+        d = &it;
+      }
+    if (n != 1) d = nullptr;
+  }
+  if (!d) {
+    stop_base();
+    if (lost_since_ < 0) lost_since_ = now;
+    else if (now - lost_since_ > 1.5) fail(now, "차체를 움직이는 중 물체를 놓침");
+    return;
+  }
+  lost_since_ = -1;
+  st_.sel_u = d->u;
+  st_.sel_v = d->v;
+  const auto cls = vision_.classes ? vision_.classes() : std::vector<vision::ObjectClass>{};
+  if (st_.class_index < 0 || st_.class_index >= static_cast<int>(cls.size())) {
+    fail(now, "물체 종류 정보가 바뀜 — 다시 선택하세요");
+    return;
+  }
+  const auto& oc = cls[static_cast<size_t>(st_.class_index)];
+  double x = 0, y = 0;
+  if (!calib_.pixel_to_table(d->u, d->v, oc.size_m, &x, &y)) {
+    fail(now, "보정 변환 실패");
+    return;
+  }
+  std::string err;
+  if (planner_.plan(calib_, d->u, d->v, oc, &err)) {
+    // In reach: stop, then measure again carefully at the observe pose (the arm is already there).
+    stop_base();
+    log_.info(strf("집기: 차체 접근 끝(%.1f초 움직임)", st_.approach_used_s));
+    enter(GraspState::kObserve, now, "차체 접근 끝 — 다시 관측합니다");
+    send_step(now);
+    return;
+  }
+  if (now - burst_start_ > opt_.approach_burst_s) {
+    stop_base();
+    settle_until_ = now + 0.6;
+    return;
+  }
+  // Turn until the object is straight ahead (+turn = counter-clockwise = towards +y), then drive along x.
+  const double bearing = std::atan2(y, x);
+  double fwd = 0.0, turn = 0.0;
+  if (std::fabs(bearing) > 6.0 * kDeg) {
+    turn = std::copysign(std::clamp(1.2 * std::fabs(bearing), 0.15, 0.35), bearing);
+  } else {
+    fwd = std::hypot(x, y) > 0.20 ? 0.3 : -0.3;  // too far: forward; too close (under the arm): back off
+  }
+  if (!robot_.set_auto_base(fwd, turn, 0.3)) {
+    fail(now, "차체 접근이 거부됨 — 속도 상한 30 % 이하에서만 합니다");
+    return;
+  }
+  st_.base_moving = true;
+}
+
+bool GraspSequencer::intrusion(const vision::DetectionSet& ds) {
+  if (ref_gray_.empty() || ds.gw != ref_gw_ || ds.gh != ref_gh_ || ds.gw <= 0 || ds.gh <= 0 || ds.img_w <= 0 ||
+      ds.img_h <= 0 || ds.gray.size() != ref_gray_.size() || !st_.plan)
+    return false;
+  const double cw = static_cast<double>(ds.img_w) / ds.gw, ch = static_cast<double>(ds.img_h) / ds.gh;
+  auto px = [&](double x, double y, double* u, double* v) {
+    return calib_.table_to_pixel(x, y, u, v) && std::isfinite(*u) && std::isfinite(*v);
+  };
+  // Where the arm can legitimately be in the image: corridors from the arm root to the parked (observe) tip and to
+  // the grasp point, plus the object itself.
+  double ru = 0, rv = 0, gu = 0, gv = 0, ou = 0, ov = 0;
+  if (!px(0.0, 0.0, &ru, &rv)) {
+    ru = ds.img_w * 0.5;
+    rv = ds.img_h;
+  }
+  ru = std::clamp(ru, -1.0 * ds.img_w, 2.0 * ds.img_w);
+  rv = std::clamp(rv, -1.0 * ds.img_h, 2.0 * ds.img_h);
+  if (!px(st_.plan->obj_x, st_.plan->obj_y, &gu, &gv)) {
+    gu = st_.orig_u;
+    gv = st_.orig_v;
+  }
+  if (!px(calib_.observe_pose.x, calib_.observe_pose.y, &ou, &ov)) {
+    ou = ru;
+    ov = rv;
+  }
+  // Parts of the arm high above a point show up displaced along the parallax direction (a tilted camera sees the hand
+  // "behind" the object). Extend each corridor to where a point 25 cm up would appear; without a measured parallax,
+  // extend it by a quarter of the image height past its end.
+  auto high_end = [&](double ex, double ey, double eu, double ev, double* hu, double* hv) {
+    if (std::hypot(calib_.parallax_x, calib_.parallax_y) > 0.05 &&
+        px(ex + 0.25 * calib_.parallax_x, ey + 0.25 * calib_.parallax_y, hu, hv))
+      return;
+    const double du = eu - ru, dv = ev - rv, l = std::hypot(du, dv);
+    *hu = l > 1e-6 ? eu + du / l * 0.25 * ds.img_h : eu;
+    *hv = l > 1e-6 ? ev + dv / l * 0.25 * ds.img_h : ev - 0.25 * ds.img_h;
+  };
+  double ghu = 0, ghv = 0, ohu = 0, ohv = 0;
+  high_end(st_.plan->obj_x, st_.plan->obj_y, gu, gv, &ghu, &ghv);
+  high_end(calib_.observe_pose.x, calib_.observe_pose.y, ou, ov, &ohu, &ohv);
+  const double half = 0.12 * ds.img_w;
+  const double obj_r = std::max(30.0, 1.5 * std::sqrt(std::max(1.0, static_cast<double>(sel_area_))));
+  auto seg = [](double pu, double pv, double au, double av, double bu, double bv) {
+    const double du = bu - au, dv = bv - av, l2 = du * du + dv * dv;
+    const double t = l2 > 1e-9 ? std::clamp(((pu - au) * du + (pv - av) * dv) / l2, 0.0, 1.0) : 0.0;
+    return std::hypot(pu - (au + t * du), pv - (av + t * dv));
+  };
+  int changed = 0, outside = 0;
+  for (int y = 0; y < ds.gh; ++y)
+    for (int x = 0; x < ds.gw; ++x) {
+      const size_t i = static_cast<size_t>(y) * static_cast<size_t>(ds.gw) + static_cast<size_t>(x);
+      if (std::abs(static_cast<int>(ds.gray[i]) - static_cast<int>(ref_gray_[i])) <= 35) continue;
+      ++changed;
+      const double u = (x + 0.5) * cw, v = (y + 0.5) * ch;
+      if (seg(u, v, ru, rv, gu, gv) < half || seg(u, v, ru, rv, ou, ov) < half || seg(u, v, gu, gv, ghu, ghv) < half ||
+          seg(u, v, ou, ov, ohu, ohv) < half || std::hypot(u - gu, v - gv) < obj_r ||
+          std::hypot(u - st_.orig_u, v - st_.orig_v) < obj_r)
+        continue;
+      ++outside;
+    }
+  if (changed > 0.6 * ds.gw * ds.gh) {
+    // Nearly the whole image changed: the camera moves with the arm, so this check cannot work here.
+    st_.intrusion_watch = false;
+    log_.warn("집기: 영상 전체가 바뀜(카메라가 팔에 달린 듯) — 이번 집기는 작업 영역 감시를 끔");
+    return false;
+  }
+  const double limit_px = std::max(3.0 * sel_area_, 0.02 * ds.img_w * ds.img_h);
+  return outside * cw * ch > limit_px;
+}
+
 void GraspSequencer::tick(double now, bool deadman) {
   if (deadman && !prev_deadman_) pending_rise_ = true;
   if (!deadman) pending_release_ = true;
@@ -567,6 +757,9 @@ void GraspSequencer::tick(double now, bool deadman) {
     st_.attempt = 0;
     st_.plan.reset();
     st_.failed_state = GraspState::kIdle;
+    st_.approach_used_s = 0;
+    st_.intrusion_watch = false;
+    ref_gray_.clear();
     goal_retried_ = false;
     log_.info("집기: 시작");
     enter(GraspState::kObserve, now);
@@ -578,6 +771,7 @@ void GraspSequencer::tick(double now, bool deadman) {
   std::string why;
   if (!robot_ok(s, &why)) {
     robot_.cancel_goal();
+    stop_base();
     st_.failed_state = state == GraspState::kPaused ? st_.resume_state : state;
     ++st_.fail_events;
     log_.warn("집기 중단: " + why);
@@ -589,8 +783,14 @@ void GraspSequencer::tick(double now, bool deadman) {
     if (!rise) return;
     const GraspState back = st_.resume_state;
     enter(back, now);
-    if (back == GraspState::kPlan) step_plan(now);
-    else if (is_motion(back)) send_step(now);
+    if (back == GraspState::kPlan) {
+      step_plan(now);
+    } else if (back == GraspState::kApproachBase) {
+      burst_start_ = last_frame_at_ = last_cmd_at_ = now;
+      settle_until_ = lost_since_ = -1;
+    } else if (is_motion(back)) {
+      send_step(now);
+    }
     return;
   }
   if (state == GraspState::kConfirm) {
@@ -606,9 +806,22 @@ void GraspSequencer::tick(double now, bool deadman) {
     pause(now, "A를 놓아 멈춤");
     return;
   }
+  // Work-area watch while the arm works near the object (new frames only).
+  if (st_.intrusion_watch && state >= GraspState::kOpenGripper && state <= GraspState::kLift) {
+    const auto ds = vision_.latest ? vision_.latest() : nullptr;
+    if (ds && ds->frame_seq != intrusion_seq_) {
+      intrusion_seq_ = ds->frame_seq;
+      if (intrusion(*ds)) {
+        log_.warn("집기: 작업 영역에 큰 변화 — 일시정지");
+        pause(now, "작업 영역에 무언가 들어옴 — 치운 뒤");
+        return;
+      }
+    }
+  }
   switch (state) {
     case GraspState::kObserve: step_observe(now, s); break;
     case GraspState::kPlan: step_plan(now); break;
+    case GraspState::kApproachBase: step_approach(now, s); break;
     case GraspState::kVerify: step_verify(now, s); break;
     case GraspState::kClose:
       if (reached_at_ < 0) {

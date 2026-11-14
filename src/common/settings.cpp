@@ -85,7 +85,9 @@ std::string settings_to_json(const Settings& s) {
     << "  \"show_crosshair\": " << json::boolean(s.show_crosshair) << ",\n"
     << "  \"font_scale\": " << json::number(s.font_scale) << ",\n"
     << "  \"autograsp_confirm\": " << json::boolean(s.autograsp_confirm) << ",\n"
-    << "  \"autograsp_retry\": " << s.autograsp_retry << "\n"
+    << "  \"autograsp_retry\": " << s.autograsp_retry << ",\n"
+    << "  \"autograsp_base\": " << json::boolean(s.autograsp_base) << ",\n"
+    << "  \"autograsp_intrusion\": " << json::boolean(s.autograsp_intrusion) << "\n"
     << "}\n";
   return o.str();
 }
@@ -138,6 +140,8 @@ bool settings_from_json(const std::string& text, Settings* s, std::string* err) 
   flt("font_scale", &s->font_scale, 1.0, 1.3);
   bln("autograsp_confirm", &s->autograsp_confirm);
   i32("autograsp_retry", &s->autograsp_retry, 0, 2);
+  bln("autograsp_base", &s->autograsp_base);
+  bln("autograsp_intrusion", &s->autograsp_intrusion);
   return true;
 }
 

@@ -39,6 +39,9 @@ struct DetectionSet {
   int img_w{0}, img_h{0};
   std::vector<Detection> items;  // best score first
   double compute_ms{0};
+  // Brightness thumbnail (1/8 of the image size, 0..255) for the work-area intrusion check.
+  int gw{0}, gh{0};
+  std::vector<uint8_t> gray;
 };
 
 struct DetectorParams {

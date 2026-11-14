@@ -25,20 +25,30 @@ bool VisionCalib::usable(int w, int h, std::string* why) const {
 bool VisionCalib::pixel_to_table(double u, double v, double object_h, double* x, double* y) const {
   const Homography inv = invert(H);
   if (!H.valid || !inv.valid || !apply(inv, u, v, x, y)) return false;
-  // Optional height correction: a blob of height h seen at tilt theta sits h/2*cot(theta) "behind" its base.
-  // Applied along the direction from the image centre's table point (approximate camera axis) to the object.
-  if (cam_tilt_rad > 0.05 && object_h > 0) {
-    double cx = 0, cy = 0;
-    if (apply(inv, image_w * 0.5, image_h * 0.5, &cx, &cy)) {
-      const double dx = *x - cx, dy = *y - cy, d = std::hypot(dx, dy);
-      const double shift = object_h * 0.5 / std::tan(cam_tilt_rad);
-      if (d > 1e-6) {
-        *x -= dx / d * shift;
-        *y -= dy / d * shift;
-      }
-    }
+  // Height correction: the blob centre of an object of height h is (roughly) a point h/2 above the table, which the
+  // table homography places h/2 * parallax away from the object's base.
+  if (object_h > 0) {
+    *x -= object_h * 0.5 * parallax_x;
+    *y -= object_h * 0.5 * parallax_y;
   }
   return std::isfinite(*x) && std::isfinite(*y);
+}
+
+bool VisionCalib::measure_parallax(double u0, double v0, double u1, double v1, double h, std::string* err) {
+  auto no = [&](const char* m) {
+    if (err) *err = m;
+    return false;
+  };
+  if (!H.valid) return no("먼저 대응점으로 보정하세요");
+  if (!(h >= 0.01 && h <= 0.15)) return no("물체 높이는 1–15 cm");
+  double x0, y0, x1, y1;
+  if (!pixel_to_table(u0, v0, 0, &x0, &y0) || !pixel_to_table(u1, v1, 0, &x1, &y1)) return no("변환 실패");
+  const double px = (x1 - x0) / h, py = (y1 - y0) / h;
+  // |p| = cot(viewing elevation). More than 5 (about 11 degrees above the table) is not a usable view.
+  if (!std::isfinite(px) || !std::isfinite(py) || std::hypot(px, py) > 5.0) return no("기울기가 너무 큼 — 다시 누르세요");
+  parallax_x = px;
+  parallax_y = py;
+  return true;
 }
 
 bool VisionCalib::table_to_pixel(double x, double y, double* u, double* v) const {
@@ -60,7 +70,7 @@ std::string calib_to_json(const VisionCalib& c) {
     << "  \"observe_pose\": {\"x\": " << n(c.observe_pose.x) << ", \"y\": " << n(c.observe_pose.y) << ", \"z\": " << n(c.observe_pose.z)
     << ", \"pitch\": " << n(c.observe_pose.pitch) << ", \"gripper\": " << n(c.observe_pose.gripper) << "},\n"
     << "  \"z_table\": " << (c.z_table ? n(*c.z_table) : std::string("null")) << ",\n"
-    << "  \"cam_tilt_rad\": " << n(c.cam_tilt_rad) << ",\n  \"points\": [";
+    << "  \"parallax\": [" << n(c.parallax_x) << ", " << n(c.parallax_y) << "],\n  \"points\": [";
   for (size_t i = 0; i < c.points.size(); ++i) {
     const auto& p = c.points[i];
     o << (i ? ", " : "") << "{\"u\": " << n(p.u) << ", \"v\": " << n(p.v) << ", \"x\": " << n(p.x) << ", \"y\": " << n(p.y) << "}";
@@ -110,7 +120,12 @@ bool calib_from_json(const std::string& text, VisionCalib* c, std::string* err) 
     if (!num(zt, -0.08, 0.20, &d)) return fail("z_table");  // the grasp floor follows it: keep it in the arm's z range
     r.z_table = d;
   }
-  if (num(v.find("cam_tilt_rad"), 0, 1.6, &d)) r.cam_tilt_rad = d;
+  if (const auto* pa = v.find("parallax"); pa && pa->is_array() && pa->array.size() == 2) {
+    double px = 0, py = 0;
+    if (!num(&pa->array[0], -5, 5, &px) || !num(&pa->array[1], -5, 5, &py) || std::hypot(px, py) > 5.0) return fail("parallax");
+    r.parallax_x = px;
+    r.parallax_y = py;
+  }
   if (const auto* pts = v.find("points"); pts && pts->is_array()) {
     if (pts->array.size() > 64) return fail("points 개수");
     for (const auto& p : pts->array) {

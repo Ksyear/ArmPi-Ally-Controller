@@ -6,7 +6,11 @@ multipart PNG stream, like the mock robot's camera. Table point (x, y) in metres
 pixels with the fixed synthetic camera  u = 320 - 1500*y,  v = 555 - 1500*x  (640x480).
 
   tools/fake_cam_server.py --port 28180 --objects "cube,red,0.18,0.00;ball,blue,0.15,-0.08"
-                           [--write-calib vision_calib.json] [--bind 127.0.0.1]
+                           [--write-calib vision_calib.json] [--bind 127.0.0.1] [--follow-robot HOST:PORT]
+
+Object positions are world coordinates (= the robot frame when the robot starts). With --follow-robot the camera
+subscribes to the mock robot's rosbridge /armpi/status and moves the objects as the base drives (odom + base_cmd),
+so base motion can be tested in closed loop.
 
 Endpoints
   /stream               multipart/x-mixed-replace PNG frames, about 10 fps
@@ -15,8 +19,12 @@ Endpoints
   /state                JSON list of objects and whether they are shown
 """
 import argparse
+import base64
 import json
+import math
+import os
 import random
+import socket
 import struct
 import sys
 import threading
@@ -63,20 +71,41 @@ class Scene:
     def __init__(self, objs):
         self.objs = objs
         self.lock = threading.Lock()
+        self.pose = (0.0, 0.0, 0.0)       # robot x, y, yaw in the world (odom)
+        self.vel = (0.0, 0.0, 0.0)        # base_cmd vx, vy, wz (robot frame)
+        self.pose_t = time.monotonic()
+        self.drawn_pose = None
         rnd = random.Random(1)
         # Table: grey with mild fixed noise (so thresholds see a realistic, non-flat background).
         self.background = [bytearray(max(0, min(255, 128 + rnd.randint(-6, 6))) for _ in range(W * 3)) for _ in range(H)]
         self.png = b""
         self.render()
 
+    def robot_pose(self):
+        # odom arrives at about 2 Hz: extrapolate with the commanded velocity in between
+        with self.lock:
+            (x, y, th), (vx, vy, wz), t0 = self.pose, self.vel, self.pose_t
+        dt = min(1.0, time.monotonic() - t0)
+        return (x + (vx * math.cos(th) - vy * math.sin(th)) * dt,
+                y + (vx * math.sin(th) + vy * math.cos(th)) * dt, th + wz * dt)
+
+    def set_pose(self, pose, vel):
+        with self.lock:
+            self.pose, self.vel, self.pose_t = pose, vel, time.monotonic()
+
     def render(self):
         rows = [bytearray(r) for r in self.background]
         with self.lock:
             objs = [dict(o) for o in self.objs]
+        rx, ry, rth = self.robot_pose()
+        self.drawn_pose = (round(rx, 4), round(ry, 4), round(rth, 4))
         for o in objs:
             if not o["shown"]:
                 continue
-            cu, cv = to_pixel(o["x"], o["y"])
+            dx, dy = o["x"] - rx, o["y"] - ry  # world -> robot frame
+            ox = math.cos(rth) * dx + math.sin(rth) * dy
+            oy = -math.sin(rth) * dx + math.cos(rth) * dy
+            cu, cv = to_pixel(ox, oy)
             half = SIZES[o["shape"]] * PX_PER_M / 2.0
             r, g, b = COLORS[o["color"]]
             for v in range(max(0, int(cv - half) - 1), min(H, int(cv + half) + 2)):
@@ -91,6 +120,9 @@ class Scene:
             self.png = png
 
     def frame(self):
+        rx, ry, rth = self.robot_pose()
+        if (round(rx, 4), round(ry, 4), round(rth, 4)) != self.drawn_pose:
+            self.render()
         with self.lock:
             return self.png
 
@@ -117,6 +149,84 @@ class Scene:
             return json.dumps(self.objs)
 
 
+def ws_send_text(sock, text):
+    data = text.encode("utf-8")
+    mask = os.urandom(4)
+    head = bytes([0x81])
+    n = len(data)
+    if n < 126:
+        head += bytes([0x80 | n])
+    elif n < 65536:
+        head += bytes([0x80 | 126]) + struct.pack("!H", n)
+    else:
+        head += bytes([0x80 | 127]) + struct.pack("!Q", n)
+    sock.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+
+def ws_read_frame(sock, buf):
+    def need(k):
+        nonlocal buf
+        while len(buf) < k:
+            chunk = sock.recv(65536)
+            if not chunk:
+                raise OSError("closed")
+            buf += chunk
+    need(2)
+    op, n = buf[0] & 0x0F, buf[1] & 0x7F
+    pos = 2
+    if n == 126:
+        need(4)
+        n = struct.unpack("!H", buf[2:4])[0]
+        pos = 4
+    elif n == 127:
+        need(10)
+        n = struct.unpack("!Q", buf[2:10])[0]
+        pos = 10
+    if n > 4 * 1024 * 1024:
+        raise OSError("frame too large")
+    need(pos + n)
+    return op, buf[pos:pos + n], buf[pos + n:]
+
+
+def follow_robot(host, port, scene):
+    """Subscribe to /armpi/status on the mock robot's rosbridge and keep the scene's robot pose current."""
+    while True:
+        try:
+            with socket.create_connection((host, port), timeout=5) as s:
+                key = base64.b64encode(os.urandom(16)).decode()
+                s.sendall(("GET / HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                           "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % (host, port, key)).encode())
+                buf = b""
+                while b"\r\n\r\n" not in buf:
+                    chunk = s.recv(4096)
+                    if not chunk or len(buf) > 65536:
+                        raise OSError("no handshake")
+                    buf += chunk
+                head, buf = buf.split(b"\r\n\r\n", 1)
+                if b" 101" not in head.split(b"\r\n")[0]:
+                    raise OSError("no upgrade")
+                s.settimeout(None)
+                ws_send_text(s, json.dumps({"op": "subscribe", "topic": "/armpi/status"}))
+                while True:
+                    op, payload, buf = ws_read_frame(s, buf)
+                    if op == 8:
+                        break
+                    if op != 1:
+                        continue
+                    try:
+                        msg = json.loads(payload)
+                        if msg.get("topic") != "/armpi/status":
+                            continue
+                        st = json.loads(msg["msg"]["data"])
+                        od, cmd = st.get("odom") or {}, st.get("base_cmd") or {}
+                        scene.set_pose((float(od.get("x", 0)), float(od.get("y", 0)), float(od.get("yaw", 0))),
+                                       (float(cmd.get("vx", 0)), float(cmd.get("vy", 0)), float(cmd.get("wz", 0))))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+        except OSError:
+            time.sleep(1.0)
+
+
 def calib_json(z_table):
     pts = [(0.12, 0.0), (0.20, 0.0), (0.16, 0.08), (0.16, -0.08), (0.24, 0.0), (0.14, 0.05)]
     points = []
@@ -126,7 +236,7 @@ def calib_json(z_table):
     return json.dumps({
         "version": 1, "image_w": W, "image_h": H,
         "observe_pose": {"x": 0.1047, "y": 0.0, "z": 0.0753, "pitch": -1.0263, "gripper": 0.0},
-        "z_table": z_table, "cam_tilt_rad": 0.0, "points": points,
+        "z_table": z_table, "parallax": [0.0, 0.0], "points": points,
         "H": [0.0, -PX_PER_M, 320.0, -PX_PER_M, 0.0, 555.0, 0.0, 0.0, 1.0],
         "saved_at": "synthetic",
     }, indent=2) + "\n"
@@ -180,11 +290,15 @@ def main():
     ap.add_argument("--fps", type=float, default=10.0)
     ap.add_argument("--z-table", type=float, default=-0.05)
     ap.add_argument("--write-calib", help="write a vision_calib.json matching this synthetic camera, then keep serving")
+    ap.add_argument("--follow-robot", metavar="HOST:PORT", help="mock robot rosbridge: move objects as the base drives")
     args = ap.parse_args()
     if args.write_calib:
         with open(args.write_calib, "w", encoding="utf-8") as fp:
             fp.write(calib_json(args.z_table))
     scene = Scene(parse_objects(args.objects))
+    if args.follow_robot:
+        host, _, port = args.follow_robot.rpartition(":")
+        threading.Thread(target=follow_robot, args=(host or "127.0.0.1", int(port), scene), daemon=True).start()
     srv = ThreadingHTTPServer((args.bind, args.port), handler(scene, max(1.0, min(30.0, args.fps))))
     srv.daemon_threads = True
     print("fake camera on http://%s:%d/stream (%d objects)" % (args.bind, args.port, len(scene.objs)), flush=True)

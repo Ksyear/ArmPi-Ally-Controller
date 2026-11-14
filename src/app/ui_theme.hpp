@@ -2,6 +2,10 @@
 // Colour is reserved for state and selection; structure is grey steps and 1 px borders.
 #pragma once
 
+#include <cstdint>
+#include <utility>
+#include <vector>
+
 #include "imgui.h"
 
 namespace ally::ui {
@@ -71,12 +75,22 @@ struct Fonts {
 };
 
 // Per-frame UI context shared by the widgets.
+// Extra touch contacts. ImGui follows one pointer as its mouse (the first finger); every other finger is listed here
+// so that sticks, hold buttons and the e-stop also answer a second finger.
+struct TouchPoint {
+  uint32_t id{0};
+  ImVec2 pos{}, down_pos{};  // window client pixels
+  bool just_down{false};     // touched down since the previous frame
+};
+
 struct UiContext {
   Fonts fonts;
   float scale{1.0f};       // display height / 1080 (layout)
   float text_scale{1.0f};  // scale x user text size setting (1.0-1.3)
   double now{0.0};
   float dt{0.016f};
+  std::vector<TouchPoint> touches;                     // extra fingers this frame
+  std::vector<std::pair<uint32_t, ImGuiID>> touch_owner;  // finger -> widget that claimed it
 };
 UiContext& ctx();
 inline float S(float px) { return px * ctx().scale; }

@@ -210,11 +210,55 @@ bool button(const char* id, const char* label, ImVec2 size, Variant v, const cha
   return clicked && enabled;
 }
 
+// ───────── multi-touch ─────────
+
+namespace {
+bool in_rect(ImVec2 p, ImVec2 a, ImVec2 b) { return p.x >= a.x && p.y >= a.y && p.x < b.x && p.y < b.y; }
+}  // namespace
+
+void touch_new_frame() {
+  auto& c = ctx();
+  c.touch_owner.erase(std::remove_if(c.touch_owner.begin(), c.touch_owner.end(),
+                                     [&](const std::pair<uint32_t, ImGuiID>& o) {
+                                       return std::none_of(c.touches.begin(), c.touches.end(),
+                                                           [&](const TouchPoint& t) { return t.id == o.first; });
+                                     }),
+                      c.touch_owner.end());
+}
+
+const TouchPoint* touch_claim(ImGuiID id, ImVec2 a, ImVec2 b) {
+  auto& c = ctx();
+  for (const TouchPoint& t : c.touches) {
+    auto own = std::find_if(c.touch_owner.begin(), c.touch_owner.end(), [&](const auto& o) { return o.first == t.id; });
+    if (own != c.touch_owner.end()) {
+      if (own->second == id) return &t;
+      continue;
+    }
+    if (in_rect(t.down_pos, a, b)) {
+      c.touch_owner.emplace_back(t.id, id);
+      return &t;
+    }
+  }
+  return nullptr;
+}
+
+bool touch_pressed_in(ImVec2 a, ImVec2 b) {
+  for (const TouchPoint& t : ctx().touches)
+    if (t.just_down && in_rect(t.down_pos, a, b)) return true;
+  return false;
+}
+
+bool touch_inside(ImVec2 a, ImVec2 b) {
+  for (const TouchPoint& t : ctx().touches)
+    if (in_rect(t.pos, a, b)) return true;
+  return false;
+}
+
 bool hold_button_active(const char* id, const char* label, ImVec2 size, const char* icon) {
   ImGui::PushID(id);
   const ImVec2 p = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("h", size);
-  const bool active = ImGui::IsItemActive();
+  const bool active = ImGui::IsItemActive() || touch_claim(ImGui::GetItemID(), p, ImVec2(p.x + size.x, p.y + size.y)) != nullptr;
   draw_button_face(ImGui::GetWindowDrawList(), p, size, active ? Variant::kSelected : Variant::kDefault, active,
                    ImGui::IsItemHovered(), true, label, icon);
   ImGui::PopID();
@@ -239,8 +283,10 @@ bool estop_button(const char* id, ImVec2 size, EstopVisual v) {
   ImGui::PushID(id);
   const ImVec2 p = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("e", size);
-  const bool pressed_now = ImGui::IsItemActivated();  // touch-down fires (safety: no waiting for release)
-  const bool active = ImGui::IsItemActive();
+  // Touch-down fires (safety: no waiting for release), with the first finger or any other one.
+  const ImVec2 p1(p.x + size.x, p.y + size.y);
+  const bool pressed_now = ImGui::IsItemActivated() || touch_pressed_in(p, p1);
+  const bool active = ImGui::IsItemActive() || touch_inside(p, p1);
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImGuiID sid = ImGui::GetItemID();
   const float shrink = tween(sid, active && v != EstopVisual::kDisabled ? 0.03f : 0.0f, tm::fast);
@@ -417,11 +463,17 @@ void trigger_bar(ImDrawList* dl, ImVec2 pos, float wdt, float value, bool connec
 bool virtual_stick(const char* id, float radius, float* x, float* y) {
   const ImVec2 p = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton(id, ImVec2(radius * 2, radius * 2));
-  const bool active = ImGui::IsItemActive();
+  bool active = ImGui::IsItemActive();
+  ImVec2 m = ImGui::GetIO().MousePos;
+  if (!active) {  // a second finger can hold the stick while the first one works elsewhere
+    if (const TouchPoint* t = touch_claim(ImGui::GetItemID(), p, ImVec2(p.x + radius * 2, p.y + radius * 2))) {
+      active = true;
+      m = t->pos;
+    }
+  }
   const ImVec2 c(p.x + radius, p.y + radius);
   *x = *y = 0;
   if (active) {
-    const ImVec2 m = ImGui::GetIO().MousePos;
     float dx = (m.x - c.x) / radius, dy = -(m.y - c.y) / radius;
     const float len = std::sqrt(dx * dx + dy * dy);
     if (len > 1.0f) {

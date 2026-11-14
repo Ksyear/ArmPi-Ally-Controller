@@ -27,6 +27,8 @@ struct Settings {
   float font_scale{1.0f};  // user text size 1.0-1.3
   bool autograsp_confirm{true};  // stop before the descent until A is pressed again
   int autograsp_retry{0};        // 0..2 automatic re-tries after a failed pick
+  bool autograsp_base{false};      // experimental: drive the base towards out-of-reach objects (speed limit <= 30 %)
+  bool autograsp_intrusion{false}; // experimental: pause when something large enters the work area (fixed camera)
 };
 
 std::string settings_dir();   // created if missing (UTF-8 path)

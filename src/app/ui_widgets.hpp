@@ -27,6 +27,13 @@ enum class PadKey { kA, kB, kX, kY, kLB, kRB, kLT, kRT, kView, kMenu, kDpadUD, k
 ImVec2 pad_badge(ImDrawList* dl, ImVec2 pos, PadKey k, float h, bool pressed = false);
 float hint(ImDrawList* dl, ImVec2 pos, PadKey k, const char* text, float h);  // badge + label, returns width
 
+// ── multi-touch ── (extra fingers; the first finger is ImGui's mouse)
+void touch_new_frame();  // after ctx().touches is filled: forget owners of lifted fingers
+// The extra finger that went down inside a..b, claimed by this widget on first sight. nullptr if none.
+const TouchPoint* touch_claim(ImGuiID id, ImVec2 a, ImVec2 b);
+bool touch_pressed_in(ImVec2 a, ImVec2 b);  // an extra finger went down inside a..b this frame
+bool touch_inside(ImVec2 a, ImVec2 b);      // an extra finger is inside a..b now
+
 // ── buttons ──
 enum class Variant { kDefault, kPrimary, kDanger, kGhost, kSelected };
 // Click on release (normal buttons).

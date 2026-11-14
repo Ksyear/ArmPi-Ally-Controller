@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -267,9 +268,118 @@ void open_folder(const std::string& path) {
   ShellExecuteW(nullptr, L"open", to_wide(path).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+// Touch contacts other than the primary one (Windows turns the primary contact into mouse messages for ImGui).
+struct Contact {
+  POINT pos{}, down{};
+  bool fresh{true};
+};
+std::map<UINT32, Contact> g_touches;
+
+void on_pointer(HWND hwnd, UINT msg, WPARAM wp) {
+  const UINT32 id = GET_POINTERID_WPARAM(wp);
+  POINTER_INPUT_TYPE type = PT_POINTER;
+  if (!GetPointerType(id, &type) || type != PT_TOUCH) return;
+  if (msg == WM_POINTERUP || msg == WM_POINTERCAPTURECHANGED) {
+    g_touches.erase(id);
+    return;
+  }
+  POINTER_INFO pi{};
+  if (!GetPointerInfo(id, &pi)) return;
+  if ((pi.pointerFlags & POINTER_FLAG_PRIMARY) || !(pi.pointerFlags & POINTER_FLAG_INCONTACT)) {
+    g_touches.erase(id);
+    return;
+  }
+  POINT pt = pi.ptPixelLocation;
+  ScreenToClient(hwnd, &pt);
+  auto it = g_touches.find(id);
+  if (it == g_touches.end()) {
+    if (g_touches.size() < 10) g_touches[id] = Contact{pt, pt, true};
+  } else {
+    it->second.pos = pt;
+  }
+}
+
+std::vector<ally::ui::TouchPoint> take_touches() {
+  std::vector<ally::ui::TouchPoint> out;
+  for (auto& [id, c] : g_touches) {
+    ally::ui::TouchPoint t;
+    t.id = id;
+    t.pos = ImVec2(static_cast<float>(c.pos.x), static_cast<float>(c.pos.y));
+    t.down_pos = ImVec2(static_cast<float>(c.down.x), static_cast<float>(c.down.y));
+    t.just_down = c.fresh;
+    c.fresh = false;
+    out.push_back(t);
+  }
+  return out;
+}
+
+// --demo-touch (with --smoke-test and a demo robot only): inject two fingers, one holding the drive stick and a
+// second tapping the e-stop, to check on the device that a second finger reaches the e-stop.
+struct DemoTouch {
+  bool on{false}, started{false}, b_down{false};
+  POINT a{}, b{};
+};
+DemoTouch g_dt;
+
+POINTER_TOUCH_INFO touch_contact(UINT32 id, POINT p, POINTER_FLAGS flags) {
+  POINTER_TOUCH_INFO t{};
+  t.pointerInfo.pointerType = PT_TOUCH;
+  t.pointerInfo.pointerId = id;
+  t.pointerInfo.ptPixelLocation = p;
+  t.pointerInfo.pointerFlags = flags;
+  t.touchFlags = TOUCH_FLAG_NONE;
+  t.touchMask = TOUCH_MASK_CONTACTAREA;
+  t.rcContact = RECT{p.x - 4, p.y - 4, p.x + 4, p.y + 4};
+  return t;
+}
+
+void demo_touch_step(int frame, const ally::ui::GuiApp& app) {
+  constexpr int kStart = 100, kSecond = 130;
+  constexpr POINTER_FLAGS kDown = POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+  constexpr POINTER_FLAGS kMove = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+  if (!g_dt.on || frame < kStart) return;
+  if (frame == kStart) {
+    const ImVec2 s = app.touch_target(0), e = app.touch_target(1);
+    g_dt.a = POINT{static_cast<LONG>(s.x), static_cast<LONG>(s.y - 30)};  // stick pushed a little forward
+    g_dt.b = POINT{static_cast<LONG>(e.x), static_cast<LONG>(e.y)};
+    ClientToScreen(g_hwnd, &g_dt.a);
+    ClientToScreen(g_hwnd, &g_dt.b);
+    // Only ever touch our own window.
+    const bool mine = GetAncestor(WindowFromPoint(g_dt.a), GA_ROOT) == g_hwnd && GetAncestor(WindowFromPoint(g_dt.b), GA_ROOT) == g_hwnd;
+    if (!mine || !InitializeTouchInjection(2, TOUCH_FEEDBACK_NONE)) {
+      boot_log(mine ? "demo-touch: touch injection unavailable" : "demo-touch: skipped (window not on top)");
+      g_dt.on = false;
+      return;
+    }
+    POINTER_TOUCH_INFO c[1] = {touch_contact(0, g_dt.a, kDown)};
+    g_dt.started = InjectTouchInput(1, c) != FALSE;
+    boot_log(g_dt.started ? "demo-touch: finger 1 on the drive stick" : "demo-touch: inject failed");
+    return;
+  }
+  if (!g_dt.started) return;
+  POINTER_TOUCH_INFO c[2] = {touch_contact(0, g_dt.a, kMove), touch_contact(1, g_dt.b, frame == kSecond ? kDown : kMove)};
+  const UINT32 n = frame >= kSecond ? 2 : 1;
+  if (frame == kSecond) boot_log("demo-touch: finger 2 on the e-stop");
+  g_dt.b_down = n == 2;
+  InjectTouchInput(n, c);
+}
+
+void demo_touch_release() {
+  if (!g_dt.started) return;
+  POINTER_TOUCH_INFO c[2] = {touch_contact(0, g_dt.a, POINTER_FLAG_UP), touch_contact(1, g_dt.b, POINTER_FLAG_UP)};
+  InjectTouchInput(g_dt.b_down ? 2 : 1, c);
+  g_dt.started = false;
+}
+
 LRESULT WINAPI wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) return true;
   switch (msg) {
+    case WM_POINTERDOWN:
+    case WM_POINTERUPDATE:
+    case WM_POINTERUP:
+    case WM_POINTERCAPTURECHANGED:
+      on_pointer(hwnd, msg, wp);
+      break;  // DefWindowProc still turns the primary contact into mouse input
     case WM_SIZE:
       if (wp == SIZE_MINIMIZED) {
         g_focused = false;
@@ -392,6 +502,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
   //   --demo-state estop|cambig|grasp  screenshot-only display states (e-stop latched on the mock robot / full camera /
   //                              first detected object selected; nothing moves)
   //   --demo-calib FILE          camera calibration for this run only (never saved)
+  //   --demo-touch               with --smoke-test and --demo-connect: inject a 2-finger touch (stick + e-stop)
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   int smoke_frames = 180, demo_base = 0;
@@ -408,6 +519,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
     else if (a == L"--tab") demo_tab = to_utf8(next());
     else if (a == L"--demo-state") demo_state = to_utf8(next());
     else if (a == L"--demo-calib") demo_calib = to_utf8(next());
+    else if (a == L"--demo-touch") g_dt.on = true;
   }
   if (argv) LocalFree(argv);
   {
@@ -481,6 +593,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
   plat.ally_battery_percent = battery_percent;
   plat.ally_on_ac = on_ac;
   plat.open_folder = open_folder;
+  plat.touches = take_touches;
 
   {
     ally::ui::GuiApp app(plat, settings, fonts);
@@ -532,6 +645,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
       g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
       g_ctx->ClearRenderTargetView(g_rtv, clear);
       ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+      if (g_smoke && !demo_host.empty()) demo_touch_step(frames, app);
       if (g_smoke && frames + 1 >= smoke_frames && !shot.empty())
         boot_log(save_backbuffer_bmp(shot) ? "screenshot saved" : "screenshot FAILED");
       const HRESULT hr = g_swap->Present(1, 0);  // vsync (120 Hz on the Ally X)
@@ -548,6 +662,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
       if (cap < 110 && elapsed < want) Sleep(static_cast<DWORD>((want - elapsed) * 1000.0));
     }
     timeEndPeriod(1);
+    demo_touch_release();
     app.shutdown();  // neutral + disconnect + rumble off + save, before the window goes away
     boot_log("shutdown ok");
   }

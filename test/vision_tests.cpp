@@ -1,4 +1,5 @@
 // Vision + autograsp unit tests (no framework, no robot, no camera): synthetic images and a fake robot.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -281,9 +282,14 @@ struct FakeRobot : robot::GraspRobot {
   int cancels{0};
   std::vector<robot::ArmTarget> gotos;
   std::vector<double> rates;
+  // Base: pose in the world (starts at the origin), integrated like the mock robot (0.25 m/s, 1.2 rad/s at full stick).
+  double now{0}, px{0}, py{0}, yaw{0};
+  double af{0}, at{0}, a_until{-1};
+  int auto_cmds{0};
 
   FakeRobot() {
     s.connected = true;
+    s.speed = 0.3;
     s.target = robot::ArmTarget{0.1047, 0.0, 0.0753, -1.0263, 0.0};
   }
   uint64_t start(const robot::ArmTarget& t) {
@@ -316,31 +322,87 @@ struct FakeRobot : robot::GraspRobot {
     if (s.goal_active) s.goal_result = robot::GoalResult::kCancelled;
     s.goal_active = false;
   }
-  robot::CoreSnapshot snapshot() const override { return s; }
+  robot::CoreSnapshot snapshot() const override {
+    robot::CoreSnapshot c = s;
+    c.auto_base_active = base_moving();
+    return c;
+  }
   bool reachable(const robot::ArmTarget& t) const override {
     return proj->reachable(armpi_kinematics::Pose{t.x, t.y, t.z, t.pitch});
+  }
+  bool set_auto_base(double f, double t, double ttl) override {
+    if ((std::fabs(f) < 1e-9 && std::fabs(t) < 1e-9) || ttl <= 0) {
+      a_until = -1;
+      return true;
+    }
+    if (s.speed > 0.3 + 1e-9) {
+      a_until = -1;
+      return false;
+    }
+    af = std::clamp(f, -0.3, 0.3);
+    at = std::clamp(t, -0.35, 0.35);
+    a_until = now + std::min(ttl, 0.5);
+    ++auto_cmds;
+    return true;
+  }
+  bool base_moving() const { return now < a_until; }
+  void advance(double dt) {
+    if (!base_moving()) return;
+    const double vx = af * s.speed * 0.25, wz = at * s.speed * 1.2;
+    px += vx * std::cos(yaw) * dt;
+    py += vx * std::sin(yaw) * dt;
+    yaw += wz * dt;
   }
 };
 
 struct FakeScene {
+  struct Obj {
+    std::string cls;
+    double wx, wy;  // world position (= robot frame at the start)
+    int track;
+    bool shown{true};
+  };
   std::shared_ptr<vision::DetectionSet> cur;
   std::vector<vision::ObjectClass> cls = vision::default_classes();
-  bool present{true};
+  std::vector<Obj> objs{{"빨간 블록", 0.18, 0.00, 7}};
+  bool present{true};  // shortcut for objs[0].shown
+  // brightness thumbnail (80 x 60 = 1/8 of 640 x 480): flat table + optional bright patch in image pixels
+  bool with_gray{false};
+  uint8_t base_gray{128};
+  int patch[4]{0, 0, 0, 0};
   uint64_t seq{0};
-  void frame(double now) {
+  void frame(double now, const FakeRobot& bot) {
     auto ds = std::make_shared<vision::DetectionSet>();
     ds->frame_seq = ++seq;
     ds->frame_mono = now;
     ds->img_w = 640;
     ds->img_h = 480;
-    if (present) {
+    if (!objs.empty()) objs[0].shown = present;
+    for (const auto& o : objs) {
+      if (!o.shown) continue;
+      // world -> robot frame -> synthetic camera (u = 320 - 1500 y, v = 555 - 1500 x)
+      const double dx = o.wx - bot.px, dy = o.wy - bot.py;
+      const double xr = std::cos(bot.yaw) * dx + std::sin(bot.yaw) * dy;
+      const double yr = -std::sin(bot.yaw) * dx + std::cos(bot.yaw) * dy;
       vision::Detection d;
-      d.class_index = class_named(cls, "빨간 블록");
-      d.u = 320;
-      d.v = 285;  // (0.18, 0.00) on the synthetic table
+      d.class_index = class_named(cls, o.cls);
+      d.u = static_cast<float>(320.0 - 1500.0 * yr);
+      d.v = static_cast<float>(555.0 - 1500.0 * xr);
+      if (d.u < 0 || d.v < 0 || d.u >= 640 || d.v >= 480) continue;
+      d.area_px = 45 * 45;
       d.score = 1;
-      d.track_id = 7;
+      d.track_id = o.track;
       ds->items.push_back(d);
+    }
+    if (with_gray) {
+      ds->gw = 80;
+      ds->gh = 60;
+      ds->gray.assign(80 * 60, base_gray);
+      for (int y = 0; y < 60; ++y)
+        for (int x = 0; x < 80; ++x) {
+          const int u = x * 8 + 4, v = y * 8 + 4;
+          if (u >= patch[0] && u < patch[2] && v >= patch[1] && v < patch[3]) ds->gray[static_cast<size_t>(y * 80 + x)] = 235;
+        }
     }
     cur = ds;
   }
@@ -357,12 +419,15 @@ struct Rig {
   double now{100.0};
   explicit Rig(robot::GraspOptions o = {}) : seq(bot, scene.source(), log, o) {
     seq.set_calib(synthetic_calib());
-    scene.frame(now);
+    bot.now = now;
+    scene.frame(now, bot);
   }
-  // Advance ~one control tick with a new camera frame.
+  // Advance ~one control tick: base motion, a new camera frame, one sequencer tick.
   void step(bool deadman) {
+    bot.advance(0.06);
     now += 0.06;
-    scene.frame(now);
+    bot.now = now;
+    scene.frame(now, bot);
     seq.tick(now, deadman);
   }
   bool run_until(robot::GraspState want, bool deadman, int max_steps = 200) {
@@ -376,8 +441,8 @@ struct Rig {
     step(false);
     step(true);
   }
-  void start() {
-    CHECK(seq.select(7, now));
+  void start(int track = 7) {
+    CHECK(seq.select(track, now));
     press();
   }
 };
@@ -579,6 +644,154 @@ void test_sequencer_safety() {
   }
 }
 
+void test_parallax() {
+  auto c = synthetic_calib();
+  const double tpx = -0.8, tpy = 0.3;  // true parallax: table shift per metre of height
+  double u0, v0, u1, v1;
+  c.table_to_pixel(0.18, 0.05, &u0, &v0);                          // table mark
+  c.table_to_pixel(0.18 + 0.03 * tpx, 0.05 + 0.03 * tpy, &u1, &v1);  // top of a 3 cm block standing on it
+  std::string err;
+  CHECK(c.measure_parallax(u0, v0, u1, v1, 0.03, &err));
+  CHECK(std::fabs(c.parallax_x - tpx) < 1e-6 && std::fabs(c.parallax_y - tpy) < 1e-6);
+  // A 3 cm cube at (0.20, -0.02): its blob centre is about 1.5 cm up -> corrected back onto its base.
+  double bu, bv, x, y;
+  c.table_to_pixel(0.20 + 0.015 * tpx, -0.02 + 0.015 * tpy, &bu, &bv);
+  CHECK(c.pixel_to_table(bu, bv, 0.03, &x, &y) && std::fabs(x - 0.20) < 1e-6 && std::fabs(y + 0.02) < 1e-6);
+  CHECK(c.pixel_to_table(bu, bv, 0.0, &x, &y) && std::fabs(x - 0.20) > 0.01);  // no correction without a height
+  // Bad inputs
+  CHECK(!c.measure_parallax(u0, v0, u1, v1, 0.0, &err));
+  double fu, fv;
+  c.table_to_pixel(0.18 + 0.03 * 9.0, 0.05, &fu, &fv);
+  CHECK(!c.measure_parallax(u0, v0, fu, fv, 0.03, &err));
+  // JSON keeps it; out-of-range values are refused
+  vision::VisionCalib back;
+  CHECK(vision::calib_from_json(vision::calib_to_json(c), &back, &err) && std::fabs(back.parallax_x - tpx) < 1e-9);
+  CHECK(!vision::calib_from_json("{\"image_w\": 640, \"image_h\": 480, \"parallax\": [9, 9]}", &back, &err));
+}
+
+void test_approach() {
+  robot::GraspOptions o;
+  o.base_approach = true;
+  {  // Far object: turn towards it, drive in, stop, observe again, plan
+    Rig r(o);
+    r.scene.objs.push_back({"초록 블록", 0.36, 0.08, 9});
+    r.step(false);
+    r.start(9);
+    bool approached = false;
+    for (int i = 0; i < 800 && r.seq.status().state != robot::GraspState::kConfirm; ++i) {
+      r.step(true);
+      approached = approached || r.seq.status().state == robot::GraspState::kApproachBase;
+      if (r.seq.status().state == robot::GraspState::kFailed) break;
+    }
+    const auto& st = r.seq.status();
+    CHECK(approached);
+    CHECK(st.state == robot::GraspState::kConfirm);
+    CHECK(st.plan.has_value() && !r.bot.base_moving() && r.bot.auto_cmds > 0);
+    CHECK(st.approach_used_s > 0.5 && st.approach_used_s < o.approach_total_s);
+    CHECK(std::fabs(r.bot.yaw) > 0.05 && r.bot.px > 0.01);  // it turned left and drove forward
+    std::printf("  approach: %.1f s of base motion, base moved %.1f cm, turned %.0f deg, %s\n", st.approach_used_s,
+                std::hypot(r.bot.px, r.bot.py) * 100, r.bot.yaw * 180 / 3.14159265, st.message.c_str());
+  }
+  {  // Letting go of A while the base moves stops it at once
+    Rig r(o);
+    r.scene.objs.push_back({"초록 블록", 0.36, 0.08, 9});
+    r.step(false);
+    r.start(9);
+    CHECK(r.run_until(robot::GraspState::kApproachBase, true));
+    for (int i = 0; i < 5; ++i) r.step(true);
+    CHECK(r.bot.base_moving());
+    r.step(false);
+    CHECK(r.seq.status().state == robot::GraspState::kPaused && !r.bot.base_moving());
+    CHECK(r.seq.status().resume_state == robot::GraspState::kApproachBase);
+  }
+  {  // Speed limit above 30 %: no base approach
+    Rig r(o);
+    r.bot.s.speed = 0.6;
+    r.scene.objs.push_back({"초록 블록", 0.36, 0.08, 9});
+    r.step(false);
+    r.start(9);
+    CHECK(r.run_until(robot::GraspState::kFailed, true));
+    CHECK(r.bot.auto_cmds == 0);
+  }
+  {  // Option off (default): out of reach simply fails
+    Rig r;
+    r.scene.objs.push_back({"초록 블록", 0.36, 0.08, 9});
+    r.step(false);
+    r.start(9);
+    CHECK(r.run_until(robot::GraspState::kFailed, true));
+    CHECK(r.bot.auto_cmds == 0 && r.seq.status().failed_state == robot::GraspState::kPlan);
+  }
+  {  // Object disappears during the approach -> stop, then fail
+    Rig r(o);
+    r.scene.objs.push_back({"초록 블록", 0.36, 0.08, 9});
+    r.step(false);
+    r.start(9);
+    CHECK(r.run_until(robot::GraspState::kApproachBase, true));
+    r.scene.objs[1].shown = false;
+    r.step(true);
+    CHECK(!r.bot.base_moving());
+    CHECK(r.run_until(robot::GraspState::kFailed, true, 60));
+  }
+}
+
+void test_intrusion() {
+  robot::GraspOptions o;
+  o.confirm_before_descend = false;
+  o.intrusion_check = true;
+  auto to_hover = [](Rig& r) {
+    r.scene.with_gray = true;
+    r.start();
+    CHECK(r.run_until(robot::GraspState::kOpenGripper, true));
+    r.bot.auto_reach = false;  // park in the hover move
+    CHECK(r.run_until(robot::GraspState::kHover, true));
+    CHECK(r.seq.status().intrusion_watch);
+  };
+  {  // Something big away from the arm's corridor -> pause
+    Rig r(o);
+    to_hover(r);
+    r.scene.patch[0] = 40, r.scene.patch[1] = 40, r.scene.patch[2] = 170, r.scene.patch[3] = 170;
+    r.step(true);
+    CHECK(r.seq.status().state == robot::GraspState::kPaused);
+    CHECK(r.seq.status().message.find("작업 영역") != std::string::npos);
+  }
+  {  // The same size inside the arm corridor, including where the raised hand shows up past the object -> keeps going
+    Rig r(o);
+    to_hover(r);
+    r.scene.patch[0] = 270, r.scene.patch[1] = 120, r.scene.patch[2] = 370, r.scene.patch[3] = 250;
+    for (int i = 0; i < 3; ++i) r.step(true);
+    CHECK(r.seq.status().state == robot::GraspState::kHover);
+  }
+  {  // Whole image changes (camera on the arm) -> the check switches itself off, no false pause
+    Rig r(o);
+    to_hover(r);
+    r.scene.base_gray = 250;
+    for (int i = 0; i < 3; ++i) r.step(true);
+    CHECK(r.seq.status().state == robot::GraspState::kHover && !r.seq.status().intrusion_watch);
+  }
+  {  // Option off: no watch
+    Rig r;
+    r.scene.with_gray = true;
+    r.start();
+    CHECK(r.run_until(robot::GraspState::kConfirm, true));
+    CHECK(!r.seq.status().intrusion_watch);
+  }
+}
+
+void test_color_sample() {
+  Rgba img(64, 64);
+  img.square(32, 32, 30, 40, 200, 90);  // green patch
+  const auto hsv = vision::rgba_to_hsv_downscaled(img.px.data(), img.w, img.h, 2);
+  const vision::HsvRange r = vision::sample_range(hsv, 16, 16, 4);
+  uint16_t h;
+  uint8_t sat, val;
+  vision::rgb_to_hsv(40, 200, 90, &h, &sat, &val);
+  CHECK(vision::in_range(r, h, sat, val));
+  vision::rgb_to_hsv(220, 30, 30, &h, &sat, &val);
+  CHECK(!vision::in_range(r, h, sat, val));
+  vision::rgb_to_hsv(128, 128, 128, &h, &sat, &val);
+  CHECK(!vision::in_range(r, h, sat, val));
+}
+
 }  // namespace
 
 int main() {
@@ -591,6 +804,10 @@ int main() {
       {"planner", test_planner},
       {"sequencer_full", test_sequencer_full},
       {"sequencer_safety", test_sequencer_safety},
+      {"parallax", test_parallax},
+      {"approach", test_approach},
+      {"intrusion", test_intrusion},
+      {"color_sample", test_color_sample},
   };
   for (const auto& [name, fn] : tests) {
     const int before = g_fail;

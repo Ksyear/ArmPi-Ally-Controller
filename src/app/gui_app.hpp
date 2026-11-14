@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -36,6 +37,7 @@ struct Platform {
   std::function<int()> ally_battery_percent;  // -1 = unknown
   std::function<bool()> ally_on_ac;
   std::function<void(const std::string& utf8_path)> open_folder;
+  std::function<std::vector<TouchPoint>()> touches;  // extra touch contacts (not the one driving the mouse)
 };
 
 class GuiApp {
@@ -56,6 +58,8 @@ class GuiApp {
   void frame(double now);
   void shutdown();  // neutral + disconnect, rumble off, save settings
   const Settings& settings() const { return settings_; }
+  // Centres of the drive stick and the e-stop in window pixels (multi-touch self check).
+  ImVec2 touch_target(int i) const { return touch_targets_[i & 1]; }
   EventLog& log() { return log_; }
 
  private:
@@ -84,6 +88,8 @@ class GuiApp {
   void draw_tab_grasp(ImVec2 size);
   void draw_grasp_candidates(float wdt);
   void draw_grasp_calibration(float wdt);
+  void draw_grasp_colors(float wdt);
+  void apply_color(const std::string& group);
   void draw_grasp_overlay(ImDrawList* dl, ImVec2 p0, ImVec2 p1);  // camera HUD, image rectangle p0..p1
   void grasp_frame(double now);                // dead-man + sequencer tick + cues, every frame
   void grasp_pad(uint16_t pressed);            // D-pad edges in the grasp tab
@@ -159,6 +165,15 @@ class GuiApp {
   vision::VisionCalib calib_edit_;
   bool calib_tap_set_{false};
   float calib_tap_u_{0}, calib_tap_v_{0};
+  int parallax_stage_{0};  // 0 = tap the table mark, 1 = tap the top of the block on it, 2 = measured
+  float par_u0_{0}, par_v0_{0};
+  float parallax_h_{0.03f};
+  // colour re-sampling
+  bool color_pick_mode_{false};
+  std::optional<vision::HsvRange> color_sample_;
+  uint32_t color_sample_rgb_{0};
+  bool user_active_{false};
+  ImVec2 touch_targets_[2]{};  // the user is driving / moving the arm this frame (pauses autograsp)
 
   std::string demo_host_;
   int demo_base_{0};

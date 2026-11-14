@@ -30,6 +30,8 @@ class GraspRobot {
   virtual void cancel_goal() = 0;
   virtual CoreSnapshot snapshot() const = 0;
   virtual bool reachable(const ArmTarget& t) const = 0;  // inside the box and IK-solvable as given
+  // Base approach (stick units, short time to live). (0, 0) stops. false = refused (speed limit above 30 %).
+  virtual bool set_auto_base(double forward, double turn, double ttl_s) = 0;
 };
 
 class CoreGraspRobot : public GraspRobot {
@@ -40,13 +42,14 @@ class CoreGraspRobot : public GraspRobot {
   void cancel_goal() override { c_.cancel_goal(); }
   CoreSnapshot snapshot() const override { return c_.snapshot(); }
   bool reachable(const ArmTarget& t) const override { return c_.reachable(t); }
+  bool set_auto_base(double forward, double turn, double ttl_s) override { return c_.set_auto_base(forward, turn, ttl_s); }
 
  private:
   RobotCore& c_;
 };
 
 enum class GraspState {
-  kIdle, kSelected, kObserve, kPlan, kConfirm, kOpenGripper, kHover, kDescend, kClose, kLift, kVerify,
+  kIdle, kSelected, kObserve, kPlan, kApproachBase, kConfirm, kOpenGripper, kHover, kDescend, kClose, kLift, kVerify,
   kDone, kPaused, kFailed, kAborted
 };
 const char* to_string_ko(GraspState s);
@@ -72,6 +75,11 @@ struct GraspOptions {
   double observe_s{1.5};           // how long to collect frames at the observe pose
   int observe_frames{3};
   double close_settle_s{0.4};
+  // Experimental, off by default:
+  bool base_approach{false};    // object out of reach -> turn/drive the base towards it (speed limit <= 30 %)
+  double approach_burst_s{2.0};  // longest continuous base motion before a stop-and-look
+  double approach_total_s{20.0}; // total base motion per pick
+  bool intrusion_check{false};  // pause when something large appears in the work area (camera fixed on the chassis)
 };
 
 // Where the sequencer gets detections. latest() may return nullptr (no camera / vision off).
@@ -113,6 +121,9 @@ struct GraspStatus {
   std::string message;  // one line for the user
   int attempt{0};
   uint64_t done_events{0}, fail_events{0};  // the UI turns increments into toasts / rumble
+  bool base_moving{false};        // base approach is commanding the chassis
+  double approach_used_s{0};      // base motion time used in this pick
+  bool intrusion_watch{false};    // work-area check armed for this pick
 };
 
 class GraspSequencer {
@@ -149,6 +160,10 @@ class GraspSequencer {
   void step_plan(double now);
   void step_goal(double now, const CoreSnapshot& s);
   void step_verify(double now, const CoreSnapshot& s);
+  void step_approach(double now, const CoreSnapshot& s);
+  void stop_base();
+  // Work-area intrusion check against the reference thumbnail taken at the observe pose (true = pause).
+  bool intrusion(const vision::DetectionSet& ds);
   // Same-class detection nearest to (u, v) within radius; nullptr if none.
   const vision::Detection* find_near(const vision::DetectionSet& ds, int cls, float u, float v, float radius) const;
 
@@ -171,6 +186,13 @@ class GraspSequencer {
   std::vector<std::pair<float, float>> samples_;  // observe / verify detections
   int verify_frames_{0}, verify_hits_{0};
   double nudge_x_{0}, nudge_y_{0}, nudge_z_{0};
+  float sel_area_{0};
+  // base approach
+  double burst_start_{-1}, settle_until_{-1}, lost_since_{-1}, last_frame_at_{-1}, last_cmd_at_{-1};
+  // intrusion check
+  std::vector<uint8_t> ref_gray_;
+  int ref_gw_{0}, ref_gh_{0};
+  uint64_t intrusion_seq_{0};
   std::optional<GraspPlan> base_plan_;  // plan before nudges
 };
 

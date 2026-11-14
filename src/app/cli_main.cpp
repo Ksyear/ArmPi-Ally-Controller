@@ -59,6 +59,8 @@ struct Args {
   int grasp_object{0};      // fake camera object index to hide after the lift
   std::optional<std::pair<double, double>> expect_xy;
   bool arm_moves_ok{false};  // grasp-selftest on a non-loopback robot: the arm moves without a dead-man
+  std::string approach_class;  // grasp-selftest: also test the base approach on an out-of-reach object of this class
+  int approach_object{2};
 };
 
 void usage() {
@@ -70,7 +72,8 @@ void usage() {
       "                          [--port N] [--rosbridge-port N] [--camera-port N | --camera-url URL]\n"
       "  armpi_ally_cli grasp-selftest --robot IP --camera-url URL --calib vision_calib.json\n"
       "                          [--class 이름] [--object N] [--expect-xy X,Y] [--port N] [--rosbridge-port N]\n"
-      "                          [--yes-arm-moves]  (127.0.0.1 이 아닌 로봇에서는 필수: 데드맨 없이 팔이 움직임)\n"
+      "                          [--approach-class 이름 --approach-object N]  (팔 범위 밖 물체로 차체 접근 시험)\n"
+      "                          [--yes-arm-moves]  (127.0.0.1 이 아닌 로봇에서는 필수: 데드맨 없이 팔·차체가 움직임)\n"
       "  armpi_ally_cli pads [--seconds N] [--rumble 밀리초]\n"
       "  armpi_ally_cli version\n",
       kVersion);
@@ -345,6 +348,7 @@ int cmd_grasp_selftest(const Args& a, EventLog& log) {
   int track = -1;
   float du = 0, dv = 0;
   const bool seen = find_target(&track, &du, &dv);
+  bool saw_approach = false;
   double tx = 0, ty = 0;
   if (seen) calib.pixel_to_table(du, dv, 0, &tx, &ty);
   c.ok("물체 인식", seen, seen ? strf("%s (%.0f, %.0f) px -> x %.1f cm, y %.1f cm, 처리 %.1f ms", a.grasp_class.c_str(), du, dv,
@@ -369,6 +373,7 @@ int cmd_grasp_selftest(const Args& a, EventLog& log) {
       const double now = mono_now();
       seq.tick(now, deadman(now));
       const auto& st = seq.status();
+      saw_approach = saw_approach || st.state == robot::GraspState::kApproachBase;
       if (st.state != last) {
         last = st.state;
         std::printf("       %5.2f s  %-10s %s\n", now - t0, robot::to_string_ko(st.state), st.message.c_str());
@@ -456,6 +461,51 @@ int cmd_grasp_selftest(const Args& a, EventLog& log) {
       wait_until(2.0, [&] { pump(); return !core.snapshot().emergency; });
     }
   }
+
+  // 3) Base approach (experimental, off by default in the app): an object out of the arm's reach. The base turns and
+  //    drives towards it at the lowest allowed speed, stops, looks again, then the arm picks it.
+  if (!a.approach_class.empty()) {
+    int want2 = -1;
+    for (size_t i = 0; i < classes.size(); ++i)
+      if (classes[i].name == a.approach_class) want2 = static_cast<int>(i);
+    int t2 = -1;
+    const bool seen2 = want2 >= 0 && wait_until(8.0, [&] {
+                         pump();
+                         const auto ds = vw.latest();
+                         if (!ds) return false;
+                         for (const auto& d : ds->items)
+                           if (d.class_index == want2) {
+                             t2 = d.track_id;
+                             return true;
+                           }
+                         return false;
+                       });
+    c.ok("팔 범위 밖 물체 인식", seen2, a.approach_class);
+    seq.cancel();
+    robot::GraspOptions o;
+    o.confirm_before_descend = false;
+    o.base_approach = true;
+    seq.set_options(o);
+    if (seen2 && seq.select(t2, mono_now())) {
+      saw_approach = false;
+      release_until = mono_now() + 0.1;
+      bool removed2 = false;
+      run(90.0,
+          [&](double now) {
+            if (seq.status().state == GS::kLift && !removed2) removed2 = fake_cam("remove=" + std::to_string(a.approach_object));
+            return now >= release_until;
+          },
+          [&] {
+            const auto s = seq.status().state;
+            return s == GS::kDone || s == GS::kFailed || s == GS::kAborted;
+          });
+      const auto& s3 = seq.status();
+      c.ok("차체 접근 단계를 거침", saw_approach, strf("차체 이동 %.1f초", s3.approach_used_s));
+      c.ok("차체 접근 뒤 집기 완료", s3.state == GS::kDone, s3.message);
+      run(0.3, [](double) { return false; }, [] { return false; });
+      c.ok("차체 자동 명령이 꺼져 있음", !core.snapshot().auto_base_active);
+    }
+  }
   seq.cancel();
   fake_cam("reset=1");
   vw.stop();
@@ -533,6 +583,8 @@ int main(int argc, char** argv) {
     else if (s == "--class") a.grasp_class = next();
     else if (s == "--object") a.grasp_object = static_cast<int>(parse_int(next()).value_or(0));
     else if (s == "--yes-arm-moves") a.arm_moves_ok = true;
+    else if (s == "--approach-class") a.approach_class = next();
+    else if (s == "--approach-object") a.approach_object = static_cast<int>(parse_int(next()).value_or(2));
     else if (s == "--expect-xy") {
       const std::string v = next();
       const auto comma = v.find(',');

@@ -17,6 +17,8 @@ namespace {
 constexpr double kLoopPeriodS = armpi_protocol::kClientSendPeriodS;  // 50 ms, 20 Hz per channel
 constexpr double kInputTimeoutS = 0.3;
 constexpr double kEps = 1e-3;
+constexpr double kAutoMaxF = 0.30, kAutoMaxT = 0.35;  // autograsp base approach, stick units
+constexpr double kAutoMaxSpeed = 0.30;                // ... only while the speed limit is at most 30 %
 
 // Link lengths from the robot config (Hiwonder-published ArmPi values). Joint limits are left open:
 // the per-robot hardware profile is not available here, so the robot's own nearest rule stays authoritative.
@@ -162,10 +164,17 @@ void RobotCore::step(double now) {
   std::optional<double> goal_grip;
   uint64_t gid = 0;
   double rate = 1.0;
+  bool auto_on = false;
+  double auto_f = 0.0, auto_t = 0.0;
   {
     std::lock_guard<std::mutex> lk(mu_);
     fresh = now - input_time_ < kInputTimeoutS;
     in = fresh ? input_ : ControlInput{};
+    // The user's own drive input always wins over (and ends) the autograsp base approach.
+    if (std::fabs(in.forward) > kEps || std::fabs(in.strafe) > kEps || std::fabs(in.turn) > kEps) auto_until_ = -1.0;
+    auto_on = fresh && now < auto_until_ && speed_ <= kAutoMaxSpeed + 1e-9;
+    auto_f = auto_f_;
+    auto_t = auto_t_;
     arm_on = arm_enabled_;
     released = released_;
     speed = speed_;
@@ -179,9 +188,14 @@ void RobotCore::step(double now) {
     }
   }
   const double fine = in.precision ? opt_.precision_scale : 1.0;
-  const double f = clamp1(in.forward) * speed * fine;
-  const double s = clamp1(in.strafe) * speed * fine;
-  const double t = clamp1(in.turn) * speed * fine;
+  double f = clamp1(in.forward) * speed * fine;
+  double s = clamp1(in.strafe) * speed * fine;
+  double t = clamp1(in.turn) * speed * fine;
+  if (auto_on) {
+    f = clampd(auto_f, -kAutoMaxF, kAutoMaxF) * speed * fine;
+    s = 0.0;
+    t = clampd(auto_t, -kAutoMaxT, kAutoMaxT) * speed * fine;
+  }
   const bool base_intent = fresh && (std::fabs(f) > kEps || std::fabs(s) > kEps || std::fabs(t) > kEps);
   const bool arm_intent = fresh && arm_on;
   bool any_arm = false;
@@ -400,6 +414,7 @@ void RobotCore::update_snapshot(double now) {
   n.arm_enabled = arm_enabled_;
   n.arm_latched = arm_enabled_ && arm_latched_;
   n.goal_active = goal_.has_value() || goal_grip_.has_value();
+  n.auto_base_active = now < auto_until_;
   n.goal_result = goal_result_;
   n.goal_id = goal_id_;
   n.goal_remaining_m = goal_remaining_;
@@ -430,6 +445,21 @@ void RobotCore::clear_input() {
   std::lock_guard<std::mutex> lk(mu_);
   input_ = ControlInput{};
   input_time_ = -1e9;
+  auto_until_ = -1.0;
+}
+
+bool RobotCore::set_auto_base(double forward, double turn, double ttl_s) {
+  std::lock_guard<std::mutex> lk(mu_);
+  const bool stop = !std::isfinite(forward) || !std::isfinite(turn) || !std::isfinite(ttl_s) || ttl_s <= 0 ||
+                    (std::fabs(forward) < 1e-6 && std::fabs(turn) < 1e-6);
+  if (stop || released_ || speed_ > kAutoMaxSpeed + 1e-9) {
+    auto_until_ = -1.0;
+    return stop;
+  }
+  auto_f_ = clampd(forward, -kAutoMaxF, kAutoMaxF);
+  auto_t_ = clampd(turn, -kAutoMaxT, kAutoMaxT);
+  auto_until_ = mono_now() + std::min(ttl_s, 0.5);
+  return true;
 }
 
 void RobotCore::set_speed(double sp) {
@@ -585,6 +615,7 @@ void RobotCore::estop() {
   arm_enabled_ = false;
   arm_latched_ = false;
   cancel_goal_locked();
+  auto_until_ = -1.0;
   input_ = ControlInput{};
   input_time_ = -1e9;
   log_.error("비상정지!");
@@ -602,6 +633,7 @@ bool RobotCore::robot_estop(std::string* err) {
     std::lock_guard<std::mutex> lk(mu_);
     arm_enabled_ = false;
     cancel_goal_locked();
+    auto_until_ = -1.0;
   }
   return ros_.call_trigger("/armpi/emergency_stop", err);
 }
@@ -653,6 +685,7 @@ void RobotCore::release_session() {
     released_ = true;
     arm_enabled_ = false;
     cancel_goal_locked();
+    auto_until_ = -1.0;
   }
   client_->disconnect();
   log_.info("조종 세션을 놓음(disconnect) — 다른 조종기·관절 직접 조종 가능");

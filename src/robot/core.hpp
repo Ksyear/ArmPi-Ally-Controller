@@ -80,6 +80,7 @@ struct CoreSnapshot {
   GoalResult goal_result{GoalResult::kNone};
   uint64_t goal_id{0};       // id returned by the arm_goto / set_gripper that started the current/last goal
   double goal_remaining_m{-1.0};
+  bool auto_base_active{false};  // autograsp base approach is driving the chassis right now
   Cues cues;
   double loop_hz{0.0};
   uint64_t loop_overruns{0};
@@ -119,6 +120,10 @@ class RobotCore {
   void cancel_goal();
   // Target is inside the workspace box and has an IK solution (same projector the reach filter uses).
   bool reachable(const ArmTarget& t) const;
+  // Autograsp base approach: forward (|f| <= 0.3) and turn (|t| <= 0.35) in stick units, scaled by the speed limit like
+  // the sticks, for at most ttl_s (<= 0.5 s) unless renewed. Refused (false) when the speed limit is above 30 %.
+  // Any user drive input cancels it at once; so do e-stop, input loss and session changes. (0, 0) stops.
+  bool set_auto_base(double forward, double turn, double ttl_s);
   void arm_sync();
 
   void estop();        // UDP emergency_stop, retried until ACK (latches the whole robot)
@@ -170,6 +175,7 @@ class RobotCore {
   double goal_remaining_{-1.0};
   std::shared_ptr<armpi_kinematics::TargetProjector> proj_;
   uint64_t new_goal_locked(double rate_scale);
+  double auto_f_{0.0}, auto_t_{0.0}, auto_until_{-1.0};
   void cancel_goal_locked();
   bool released_{false};
   double speed_{0.4};
