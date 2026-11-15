@@ -20,4 +20,4 @@ Source: branch feat/arm-target-nearest-logind, commit 4ab02ad (byte-identical co
 The UdpLink class declared in datagram_link.hpp is not compiled here; this project provides its own
 DatagramLink implementation (src/net/udp_link.*) on a Winsock/POSIX socket layer.
 
-A copy of the Apache License 2.0 is available at https://www.apache.org/licenses/LICENSE-2.0
+The upstream LICENSE (Apache License 2.0) and NOTICE are included unmodified as LICENSE and NOTICE.upstream.

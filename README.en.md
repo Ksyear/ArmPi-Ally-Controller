@@ -71,3 +71,9 @@ tools       synthetic camera for tests
 Not yet tested on the real robot. Object picking assumes single-colour blocks and balls on a flat table (objects about 20 px across in the image can be confused: a 20 px block turned 45° reads as a ball, a ball of radius 8 px as a block) and uses commanded (not measured) arm positions. Base approach and the intrusion check are experimental and off by default. The tilt direction was derived from the sensor axes and still needs a hands-on check. Code is not signed (Windows Smart App Control blocks unsigned exes).
 
 Documentation is mostly in Korean; this page is the English summary.
+
+## Licence
+
+[MIT](LICENSE). Bundled third-party code under `third_party/` keeps its own licence: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Personal project, not affiliated with Hiwonder or ASUS. "Hiwonder", "ArmPi", "ASUS" and "ROG Ally" are trademarks of their respective owners and are used only to identify the hardware.

@@ -148,4 +148,6 @@ CI(GitHub Actions)는 우분투에서 Windows exe를 크로스 빌드해 PE 보�
 
 ## 라이선스
 
-[MIT](LICENSE). 함께 넣은 외부 코드의 라이선스는 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+[MIT](LICENSE). 함께 넣은 외부 코드(`third_party/`)는 각자의 라이선스를 따른다: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+개인 프로젝트이며 Hiwonder, ASUS와 관계없다. "Hiwonder", "ArmPi", "ASUS", "ROG Ally" 등 제품 이름은 각 소유자의 상표이고, 대상 하드웨어를 가리키는 데만 쓴다.
