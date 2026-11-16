@@ -7,7 +7,11 @@ Version **0.4.3** · [한국어 README](README.md) · MIT licence · Win32 + Dir
 ![Drive screen (Ally X, mock robot)](docs/images/drive.jpg)
 ![Grasp tab](docs/images/grasp.jpg)
 
-*Screens were saved by the app itself on the Ally X, connected to a mock robot with a synthetic camera. A real-robot demo video will follow the hardware tests.*
+*The two screens above were saved by the app itself on the Ally X, connected to a mock robot with a synthetic camera.*
+
+![Grasp tab connected to the real robot](docs/images/real_grasp.jpg)
+
+*This one was saved while connected to the **real ArmPi Pro** (2026-11-16, app 0.4.2): a red ball detected in the live camera image (plus one false positive on a red object in the background), still "calibration needed"; the top bar shows robot battery 8.09 V, median ACK 12 ms, 17 fps.*
 
 ## What it does
 
@@ -44,7 +48,7 @@ Version **0.4.3** · [한국어 README](README.md) · MIT licence · Win32 + Dir
 | Mock robot end-to-end (discovery, drive, arm ramps, reach limit, e-stop, rosbridge, camera, joint debug) | 21/21 |
 | Autograsp end-to-end (mock robot + synthetic camera: pick, pause/resume, e-stop abort, base approach then pick) | 22/22 |
 | On the Ally X | GUI rendering, network self-test, injected two-finger touch → e-stop, accelerometer readout; sticks, buttons and rumble checked by hand |
-| Real robot | **not yet** |
+| Real robot (first hands-on test, 2026-11-16, app 0.4.2) | **Manual control works.** From the app log: three sessions, control session + rosbridge + camera up within 1 s each time, no rosbridge failures; 6 e-stops all ACKed in 5–16 ms, 2 clears confirmed in 15–16 ms; the arm moved under LB control (robot-reported pose changed from the home pose). Driving and the gripper are not logged, so they rest on the operator's report ("works"). From the saved screen: median ACK 12 ms, 17 fps, a red ball detected in the live image. **Automatic picking does not work on the real robot yet** (under investigation): no pick start/failure entries in the log, no calibration file on the device, the screen shows "calibration needed". |
 
 ```bash
 scripts/build_win.sh                       # cross-compile the Windows exes (mingw-w64)
@@ -68,7 +72,7 @@ tools       synthetic camera for tests
 
 ## Limitations
 
-Not yet tested on the real robot. Object picking assumes single-colour blocks and balls on a flat table (objects about 20 px across in the image can be confused: a 20 px block turned 45° reads as a ball, a ball of radius 8 px as a block) and uses commanded (not measured) arm positions. Base approach and the intrusion check are experimental and off by default. The tilt direction was derived from the sensor axes and still needs a hands-on check. Code is not signed (Windows Smart App Control blocks unsigned exes).
+On the real robot only manual control has been checked (2026-11-16); automatic picking does not work there yet and the cause is being investigated. Object picking assumes single-colour blocks and balls on a flat table (objects about 20 px across in the image can be confused: a 20 px block turned 45° reads as a ball, a ball of radius 8 px as a block) and uses commanded (not measured) arm positions. Base approach and the intrusion check are experimental and off by default. The tilt direction was derived from the sensor axes and still needs a hands-on check. Code is not signed (Windows Smart App Control blocks unsigned exes).
 
 Documentation is mostly in Korean; this page is the English summary.
 
