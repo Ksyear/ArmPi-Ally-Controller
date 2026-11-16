@@ -101,7 +101,14 @@ GuiApp::GuiApp(Platform p, Settings s, Fonts fonts) : plat_(std::move(p)), setti
     }
   }
   vision::VisionCalib calib;
-  if (vision::load_calib(vision::calib_path(), &calib, &cerr)) calib_ = calib;
+  if (vision::load_calib(vision::calib_path(), &calib, &cerr)) {
+    calib_ = calib;
+    log_.info(strf("카메라 보정 읽음: %dx%d, 책상 높이 %s, 대응점 %d개, 잔차 %.1f mm, 저장 %s", calib_.image_w, calib_.image_h,
+                   calib_.z_table ? strf("%.1f cm", *calib_.z_table * 100).c_str() : "없음", static_cast<int>(calib_.points.size()),
+                   calib_.res.rms_m * 1000, calib_.saved_at.c_str()));
+  } else {
+    log_.info("카메라 보정 없음(" + cerr + ") — 자동 집기 전에 집기 탭에서 '보정 시작'");
+  }
   vision_.set_max_hz(10.0);
   vision_.start();
 }

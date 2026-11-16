@@ -598,6 +598,38 @@ void test_sequencer_full() {
   CHECK(r.bot.s.target.gripper > 0.5);  // still holding
 }
 
+// A device without a calibration file: selecting says so, A does not start anything, and the refusal is logged.
+void test_sequencer_no_calib() {
+  Rig r;
+  r.seq.set_calib(vision::VisionCalib{});
+  CHECK(r.seq.select(7, r.now));
+  CHECK(r.seq.status().state == robot::GraspState::kSelected);
+  CHECK(r.seq.status().message.find("보정 필요") != std::string::npos);
+  const uint64_t logged = r.log.count();
+  r.press();
+  CHECK(r.seq.status().state == robot::GraspState::kSelected);
+  CHECK(r.bot.gotos.empty() && r.seq.status().fail_events == 1);
+  CHECK(r.log.count() > logged);
+  bool found = false;
+  for (const auto& e : r.log.last(8))
+    if (e.text.find("집기 시작 못 함") != std::string::npos) found = true;
+  CHECK(found);
+  // Pressing again (without a calibration) refuses again; a calibration whose image size differs is refused too.
+  r.press();
+  CHECK(r.seq.status().fail_events == 2 && r.bot.gotos.empty());
+  auto wrong = synthetic_calib();
+  wrong.image_w = 1280;
+  wrong.image_h = 720;
+  r.seq.set_calib(wrong);
+  r.press();
+  CHECK(r.seq.status().state == robot::GraspState::kSelected && r.bot.gotos.empty());
+  CHECK(r.seq.status().message.find("해상도") != std::string::npos);
+  // With the matching calibration the same press starts.
+  r.seq.set_calib(synthetic_calib());
+  r.press();
+  CHECK(r.seq.status().state == robot::GraspState::kObserve && !r.bot.gotos.empty());
+}
+
 void test_sequencer_safety() {
   {  // Releasing A pauses and cancels; pressing again re-sends the same step
     Rig r;
@@ -902,6 +934,7 @@ int main() {
       {"calib", test_calib},
       {"planner", test_planner},
       {"sequencer_full", test_sequencer_full},
+      {"sequencer_no_calib", test_sequencer_no_calib},
       {"sequencer_safety", test_sequencer_safety},
       {"parallax", test_parallax},
       {"approach", test_approach},

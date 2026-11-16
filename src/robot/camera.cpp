@@ -89,13 +89,14 @@ void CameraFeed::loop() {
       last_frame_mono_ = now;
       f->seq = ++frames_;
       f->mono = now;
+      const int w = f->width, h = f->height;
       frame_ = std::move(f);
       encoded_ = std::move(data);
       if (!streaming_) {
         streaming_ = true;
         status_ = "수신 중";
         logged = false;
-        log_.ok("영상 수신 시작");
+        log_.ok(strf("영상 수신 시작 (%dx%d)", w, h));  // the calibration is tied to this size
       }
       return !stop_;
     });

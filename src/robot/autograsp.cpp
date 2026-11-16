@@ -270,7 +270,13 @@ bool GraspSequencer::select(int track_id, double now) {
     st_.attempt = 0;
     last_seq_ = ds->frame_seq;
     missing_ = 0;
-    enter(GraspState::kSelected, now);
+    // Say now what will block the start, not only after A is pressed: on a fresh device there is no calibration yet.
+    std::string why;
+    if (!calib_.usable(ds->img_w, ds->img_h, &why)) enter(GraspState::kSelected, now, "보정 필요: " + why + " — 아래 '보정 시작'");
+    else enter(GraspState::kSelected, now);
+    const auto cls = vision_.classes ? vision_.classes() : std::vector<vision::ObjectClass>{};
+    const std::string name = d.class_index >= 0 && d.class_index < static_cast<int>(cls.size()) ? cls[static_cast<size_t>(d.class_index)].name : "?";
+    log_.info(strf("집기: '%s' 선택 (u %.0f, v %.0f, %.0f px²)%s", name.c_str(), d.u, d.v, d.area_px, why.empty() ? "" : (" — " + why).c_str()));
     return true;
   }
   return false;
@@ -782,12 +788,18 @@ void GraspSequencer::tick(double now, bool deadman) {
     // Start (or start over): needs a usable calibration and a healthy robot.
     const auto ds = vision_.latest ? vision_.latest() : nullptr;
     std::string why;
+    // A refused start is reported like a failure (log line, toast, rumble): the message line alone was easy to miss
+    // on the device, and the log showed nothing at all.
     if (!calib_.usable(ds ? ds->img_w : 0, ds ? ds->img_h : 0, &why)) {
-      st_.message = "보정 필요: " + why;
+      st_.message = "보정 필요: " + why + " — 아래 '보정 시작'";
+      ++st_.fail_events;
+      log_.warn("집기 시작 못 함: " + st_.message);
       return;
     }
     if (!robot_ok(robot_.snapshot(), &why)) {
       st_.message = "시작할 수 없음: " + why;
+      ++st_.fail_events;
+      log_.warn("집기 시작 못 함: " + why);
       return;
     }
     st_.attempt = 0;
