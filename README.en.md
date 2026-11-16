@@ -2,7 +2,7 @@
 
 **A C++17 Windows app that turns an ASUS ROG Ally X handheld into a full controller for the Hiwonder ArmPi Pro robot (mecanum base + 5-axis arm + gripper), including camera-based object picking.**
 
-Version **0.4.3** · [한국어 README](README.md) · MIT licence · Win32 + Direct3D 11 + Dear ImGui · one static exe, no runtime DLLs
+Version **0.4.4** · [한국어 README](README.md) · MIT licence · Win32 + Direct3D 11 + Dear ImGui · one static exe, no runtime DLLs
 
 ![Drive screen (Ally X, mock robot)](docs/images/drive.jpg)
 ![Grasp tab](docs/images/grasp.jpg)
@@ -44,11 +44,11 @@ Version **0.4.3** · [한국어 README](README.md) · MIT licence · Win32 + Dir
 | What | Result |
 |---|---|
 | Unit tests (protocol helpers, mapper, haptics, security limits, tilt maths, capture masking) | 86/86 |
-| Vision + autograsp unit tests (detection, homography, calibration files, planner, the whole state machine incl. dead-man, e-stop, interventions, base approach, intrusion check) | 203/203 |
+| Vision + autograsp unit tests (detection, homography, calibration files, planner, the whole state machine incl. dead-man, e-stop, interventions, refused start without a calibration, base approach, intrusion check) | 214/214 |
 | Mock robot end-to-end (discovery, drive, arm ramps, reach limit, e-stop, rosbridge, camera, joint debug) | 21/21 |
 | Autograsp end-to-end (mock robot + synthetic camera: pick, pause/resume, e-stop abort, base approach then pick) | 22/22 |
 | On the Ally X | GUI rendering, network self-test, injected two-finger touch → e-stop, accelerometer readout; sticks, buttons and rumble checked by hand |
-| Real robot (first hands-on test, 2026-11-16, app 0.4.2) | **Manual control works.** From the app log: three sessions, control session + rosbridge + camera up within 1 s each time, no rosbridge failures; 6 e-stops all ACKed in 5–16 ms, 2 clears confirmed in 15–16 ms; the arm moved under LB control (robot-reported pose changed from the home pose). Driving and the gripper are not logged, so they rest on the operator's report ("works"). From the saved screen: median ACK 12 ms, 17 fps, a red ball detected in the live image. **Automatic picking does not work on the real robot yet** (under investigation): no pick start/failure entries in the log, no calibration file on the device, the screen shows "calibration needed". |
+| Real robot (first hands-on test, 2026-11-16, app 0.4.2) | **Manual control works.** From the app log: three sessions, control session + rosbridge + camera up within 1 s each time, no rosbridge failures; 6 e-stops all ACKed in 5–16 ms, 2 clears confirmed in 15–16 ms; the arm moved under LB control (robot-reported pose changed from the home pose). Driving and the gripper are not logged, so they rest on the operator's report ("works"). From the saved screen: median ACK 12 ms, 17 fps, a red ball detected in the live image. **Automatic picking stopped before it started**: no pick start/failure entries in the log, no calibration file on the device, the screen shows "calibration needed" — without a calibration the start is refused, and 0.4.2 showed that only as a one-line message with no log entry or toast (fixed in 0.4.4). To be retried after calibrating on the device. |
 
 ```bash
 scripts/build_win.sh                       # cross-compile the Windows exes (mingw-w64)
@@ -72,7 +72,7 @@ tools       synthetic camera for tests
 
 ## Limitations
 
-On the real robot only manual control has been checked (2026-11-16); automatic picking does not work there yet and the cause is being investigated. Object picking assumes single-colour blocks and balls on a flat table (objects about 20 px across in the image can be confused: a 20 px block turned 45° reads as a ball, a ball of radius 8 px as a block) and uses commanded (not measured) arm positions. Base approach and the intrusion check are experimental and off by default. The tilt direction was derived from the sensor axes and still needs a hands-on check. Code is not signed (Windows Smart App Control blocks unsigned exes).
+On the real robot only manual control has been checked (2026-11-16); automatic picking has not succeeded there yet: the first attempt stopped before starting because the device had no camera calibration file (0.4.4 now logs, toasts and rumbles on that refusal), and a retry after calibration is pending. Object picking assumes single-colour blocks and balls on a flat table (objects about 20 px across in the image can be confused: a 20 px block turned 45° reads as a ball, a ball of radius 8 px as a block) and uses commanded (not measured) arm positions. Base approach and the intrusion check are experimental and off by default. The tilt direction was derived from the sensor axes and still needs a hands-on check. Code is not signed (Windows Smart App Control blocks unsigned exes).
 
 Documentation is mostly in Korean; this page is the English summary.
 

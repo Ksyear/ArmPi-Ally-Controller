@@ -1,6 +1,6 @@
 # 구조
 
-현재 버전 0.4.3.
+현재 버전 0.4.4.
 
 ```mermaid
 flowchart LR
